@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ComfyUI Generation Trainer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="header">
+    <div>
+      <h1>Generation Trainer</h1>
+      <p class="subtitle">Upload → generate ×10 → rate → auto-learn</p>
+    </div>
+    <div class="header-actions">
+      <span id="comfyStatus" class="badge">ComfyUI …</span>
+      <span id="pendingBadge" class="badge warn hidden">0 unrated</span>
+      <button id="startRateBtn" class="btn success hidden">Start rating</button>
+    </div>
+  </header>
+
+  <nav class="main-nav">
+    <button class="nav-btn active" data-view="generate">Generate</button>
+    <button class="nav-btn" data-view="rate">Rate</button>
+    <button class="nav-btn" data-view="prompts">Prompts</button>
+  </nav>
+
+  <!-- GENERATE -->
+  <section id="viewGenerate" class="view">
+    <div class="panel">
+      <h2>1. Upload training photo</h2>
+      <div class="upload-row">
+        <input type="file" id="photoInput" accept="image/*" />
+        <img id="uploadPreview" class="upload-preview hidden" alt="preview" />
+        <span id="uploadName" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>2. Run batch generation</h2>
+      <div class="gen-options">
+        <label>Prompt profile
+          <select id="promptProfile">
+            <option value="prompt_1">Prompt 1</option>
+            <option value="prompt_2">Prompt 2</option>
+          </select>
+        </label>
+        <label>Generations
+          <select id="genCount">
+            <option value="10" selected>10</option>
+            <option value="5">5</option>
+            <option value="3">3</option>
+            <option value="1">1</option>
+          </select>
+        </label>
+        <button id="generateBtn" class="btn primary" disabled>Generate</button>
+      </div>
+      <div id="genProgress" class="gen-progress hidden">
+        <div class="progress-bar"><div id="progressFill"></div></div>
+        <p id="genStatusText" class="muted"></p>
+      </div>
+    </div>
+
+    <div class="panel highlight" id="afterGenPanel">
+      <h2>3. After generation</h2>
+      <p id="pendingSummary" class="pending-summary">No unrated videos yet.</p>
+      <button id="syncAndRateBtn" class="btn success">Sync &amp; start rating</button>
+    </div>
+  </section>
+
+  <!-- RATE -->
+  <section id="viewRate" class="view hidden">
+    <main class="layout">
+      <aside class="sidebar">
+        <h2>Queue</h2>
+        <div class="tabs">
+          <button class="tab active" data-tab="pending">To rate</button>
+          <button class="tab" data-tab="videos">Videos</button>
+          <button class="tab" data-tab="all">All</button>
+        </div>
+        <ul id="queueList" class="queue-list"></ul>
+        <section class="profile-card">
+          <h3>Learned profile</h3>
+          <p id="profileEmpty" class="muted">Rate generations to build learned profile.</p>
+          <pre id="profileJson" class="profile-json hidden"></pre>
+          <button id="applyBtn" class="btn ghost">Apply learned profile</button>
+        </section>
+      </aside>
+
+      <section class="viewer">
+        <div id="emptyState" class="empty-state">
+          <p>Sync from ComfyUI or finish a batch, then start rating.</p>
+        </div>
+        <div id="ratingPanel" class="rating-panel hidden">
+          <div class="preview-wrap">
+            <img id="previewImg" alt="preview" class="hidden" />
+            <video id="previewVideo" controls class="hidden"></video>
+          </div>
+          <div class="meta"><div id="metaInfo"></div></div>
+          <form id="ratingForm">
+            <h2>Rate <span class="hint">1 = bad · 10 = excellent</span></h2>
+            <div class="sliders" id="sliders"></div>
+            <label class="comment-label">Comment
+              <textarea id="comment" rows="3" placeholder="extra fingers, wrong skin tone…"></textarea>
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="btn primary">Save rating</button>
+              <button type="button" id="skipBtn" class="btn ghost">Skip</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </main>
+  </section>
+
+  <!-- PROMPTS -->
+  <section id="viewPrompts" class="view hidden">
+    <div class="panel">
+      <h2>Prompt profiles <span class="hint">stored in trainer/prompts.json — not in code</span></h2>
+      <div class="prompt-tabs">
+        <button class="tab active" data-prompt="prompt_1">Prompt 1</button>
+        <button class="tab" data-prompt="prompt_2">Prompt 2</button>
+      </div>
+      <div id="promptFields" class="prompt-fields"></div>
+      <button id="savePromptsBtn" class="btn primary">Save prompts</button>
+    </div>
+  </section>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+{
+  "shared": {
+    "clipseg_upper": "shirt, blouse, top, t-shirt, bra, sports bra, bikini top, jacket, coat, hoodie, sweater, cardigan, clothing on torso, fabric on chest, straps on shoulders",
+    "clipseg_lower": "pants, jeans, skirt, mini skirt, maxi skirt, black skirt, dress, shorts, underwear, panties, thong, bikini bottom, swimsuit, stockings, socks, leggings, waistband, fabric on hips thighs legs belly lower torso, clothing below waist",
+    "clipseg_cleanup": "remaining clothes, fabric, textile, bra, underwear, bikini, shirt, pants, dress, straps, lace, covered skin, clothing, swimsuit"
+  },
+  "prompt_1": {
+    "label": "Prompt profile 1",
+    "nodes": {
+      "Positive inpaint 1": "photorealistic, uncensored, explicit, exact same woman, exact same face, exact same person, one person only, single complete body, two arms two hands attached to shoulders, exact same body shape proportions and pose, exact same room background lighting camera angle, remove all clothes completely, fully nude naked female body, bare skin, natural female anatomy, single navel, two legs two feet, correct hips pelvis thighs knees, exposed breasts nipples areola on chest only, exposed pussy vulva labia centered on pelvis, no shirt no bra no pants no skirt no underwear, distinct lower body not copied from chest, natural skin pores, seamless inpaint, 8k",
+      "Positive inpaint 2 lower body": "photorealistic, same woman same pose same lighting background, inpaint lower body from waist to feet only, bare hips pelvis vulva labia inner thighs legs knees feet, flat abdomen single belly button, smooth natural skin on belly hips thighs legs, no breasts on stomach, no nipples below chest line, no duplicated torso, one continuous female body, correct lower body anatomy, seamless skin transition at waist",
+      "Video motion prompt": "exact same person, exact same face identity, same facial features, same hairstyle, same room background, static camera, no camera movement, she raises her right hand and waves hello, friendly smile, natural smooth arm motion, subtle body motion only, cinematic",
+      "Skin tone prompt (photo + inpaint)": "natural skin tone matching face, warm undertone, consistent melanin, uniform skin color across full body, same complexion from face to torso to legs, realistic skin texture and pores",
+      "Skin tone prompt (video)": "matching skin tone from face to body, consistent undertone, consistent melanin tone, uniform skin color, same complexion throughout video",
+      "Negative inpaint 1": "different person, different face, face change, identity change, wrong face, clothes, dressed, shirt, pants, skirt, dress, bra, underwear, bikini, swimsuit, lingerie, fabric, textile, partially clothed, covered breasts, covered nipples, covered genitals, censored, censorship, mosaic, blur censor, black bar, text, watermark, logo, deformed, bad anatomy, blurry, cartoon, duplicate torso, cloned upper body, mirrored chest on hips, extra breasts on thighs, copied breasts on legs, breasts on abdomen, nipple on belly, nipple on thigh, second torso below waist, symmetrical body duplication, extra navel, multiple belly buttons, third breast on abdomen, fused legs, malformed pelvis, genitals on thigh, vertical body tiling, repeated torso pattern, extra arm, extra hand, floating hand, disconnected limb, multiple people, cropped body parts",
+      "Negative inpaint 2": "breasts on abdomen, nipple on belly, nipple on thigh, extra breast below chest, duplicated chest on hips, second torso, cloned upper body, torso tiling, extra arm, floating hand, disconnected limb, clothes, skirt, pants, fabric, deformed, bad anatomy, blurry",
+      "Video negative": "different person, different face, face change, identity change, wrong face, distorted face, different hairstyle, skin tone mismatch, face-body color mismatch, patchy skin tone, over-desaturated skin, overexposed skin, different room, camera pan, camera zoom, camera shake, low motion, frozen static image, blurry, deformed, text, watermark, logo, captions"
+    }
+  },
+  "prompt_2": {
+    "label": "Prompt profile 2",
+    "nodes": {
+      "Positive inpaint 1": "",
+      "Positive inpaint 2 lower body": "",
+      "Video motion prompt": "",
+      "Skin tone prompt (photo + inpaint)": "",
+      "Skin tone prompt (video)": "",
+      "Negative inpaint 1": "",
+      "Negative inpaint 2": "",
+      "Video negative": ""
+    }
+  }
+}
