@@ -322,13 +322,14 @@ class TrainerHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global DEFAULT_WORKFLOW
+
     ap = argparse.ArgumentParser(description="ComfyUI generation trainer")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=int(os.environ.get("TRAINER_PORT", "8189")))
     ap.add_argument("--workflow", default=DEFAULT_WORKFLOW)
     args = ap.parse_args()
 
-    global DEFAULT_WORKFLOW
     DEFAULT_WORKFLOW = args.workflow
 
     server = ThreadingHTTPServer((args.host, args.port), TrainerHandler)
