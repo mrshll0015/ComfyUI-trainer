@@ -48,6 +48,52 @@ def _widget_names(class_type: str, object_info: Dict[str, Any]) -> List[str]:
     return names
 
 
+def _widget_default(spec: Any) -> Any:
+    if not isinstance(spec, (list, tuple)) or not spec:
+        return None
+    input_type = spec[0]
+    options = spec[1] if len(spec) > 1 else None
+
+    if isinstance(input_type, (list, tuple)) and input_type:
+        return input_type[0]
+
+    if isinstance(options, dict):
+        if "default" in options:
+            return options["default"]
+        combo_options = options.get("options")
+        if input_type == "COMBO" and isinstance(combo_options, list) and combo_options:
+            return combo_options[0]
+
+    if input_type == "INT":
+        return 0
+    if input_type == "FLOAT":
+        return 0.0
+    if input_type == "STRING":
+        return ""
+    if input_type == "BOOLEAN":
+        return False
+    return None
+
+
+def _fill_missing_widget_defaults(
+    class_type: str,
+    object_info: Dict[str, Any],
+    inputs: Dict[str, Any],
+) -> None:
+    info = object_info.get(class_type) or {}
+    inp = info.get("input") or {}
+    for section in ("required", "optional", "hidden"):
+        block = inp.get(section) or {}
+        for name, spec in block.items():
+            if name in inputs:
+                continue
+            if not _is_widget_input_spec(spec):
+                continue
+            default = _widget_default(spec)
+            if default is not None:
+                inputs[name] = default
+
+
 def _filter_control_values(widget_values: List[Any]) -> List[Any]:
     filtered: List[Any] = []
     for i, value in enumerate(widget_values):
@@ -137,14 +183,16 @@ def build_api_prompt(
                 if key in {"videopreview", "preview"}:
                     continue
                 inputs.setdefault(key, value)
-        elif wv is not None:
+        else:
             widget_names = _widget_names(class_type, object_info)
-            filtered = _filter_control_values(list(wv))
+            filtered = _filter_control_values(list(wv or []))
             for i, name in enumerate(widget_names):
                 if name in inputs:
                     continue
                 if i < len(filtered):
                     inputs[name] = filtered[i]
+
+        _fill_missing_widget_defaults(class_type, object_info, inputs)
 
         prompt[node_id] = {"class_type": class_type, "inputs": inputs}
 
