@@ -30,14 +30,41 @@ def comfy_base_url(host: str = "127.0.0.1", port: int = 8188) -> str:
     return f"http://{host}:{port}"
 
 
+def _runpod_root(root: Optional[str] = None) -> str:
+    return root or os.environ.get("RUNPOD_ROOT", "/workspace/runpod-slim")
+
+
 def default_output_dir(root: Optional[str] = None) -> str:
-    base = root or os.environ.get("RUNPOD_ROOT", "/workspace/runpod-slim")
-    return os.path.join(base, "ComfyUI", "output")
+    return os.path.join(_runpod_root(root), "ComfyUI", "output")
+
+
+def resolve_workflow_path(name: str, root: Optional[str] = None) -> str:
+    """Find workflow JSON on RunPod (trainer repo, ComfyUI user dir, or root)."""
+    if os.path.isabs(name) and os.path.isfile(name):
+        return name
+
+    base = _runpod_root(root)
+    cu = os.path.join(base, "ComfyUI")
+    candidates = [
+        os.path.join(base, "trainer", "workflows", name),
+        os.path.join(base, "workflows", name),
+        os.path.join(cu, "user", "default", "workflows", name),
+        os.path.join(cu, "user", "workflows", name),
+        os.path.join(base, name),
+    ]
+    env_path = os.environ.get("TRAINER_WORKFLOW_PATH")
+    if env_path:
+        candidates.insert(0, env_path)
+
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+
+    return candidates[0]
 
 
 def default_workflow_path(name: str, root: Optional[str] = None) -> str:
-    base = root or os.environ.get("RUNPOD_ROOT", "/workspace/runpod-slim")
-    return os.path.join(base, name)
+    return resolve_workflow_path(name, root)
 
 
 def ping(host: str = "127.0.0.1", port: int = 8188) -> bool:

@@ -6,12 +6,18 @@ Browser UI for ComfyUI: upload photo → batch generate → rate outputs → aut
 
 ### RunPod
 
-Clone into `/workspace/runpod-slim/trainer`, then:
+Clone into `/workspace/runpod-slim/trainer`. Workflow lives in `trainer/workflows/app-photo-video.json`.
 
 ```bash
 cd /workspace/runpod-slim
+git -C trainer pull   # or git clone ...
 bash trainer/start-trainer.sh
 ```
+
+Search order for workflow file:
+1. `$TRAINER_WORKFLOW_PATH` (if set)
+2. `trainer/workflows/app-photo-video.json`
+3. `ComfyUI/user/default/workflows/app-photo-video.json`
 
 Expose HTTP port **8189** in RunPod.
 
@@ -33,7 +39,7 @@ Expose HTTP port **8189** in RunPod.
 ### Prompt profiles
 
 - `prompt_1` / `prompt_2` in `prompts.json`
-- `app-photo-video.json` has **empty** CLIPTextEncode widgets — models only, prompts injected at queue time
+- `app-photo-video.json` in `trainer/workflows/` — models wired, prompts empty (filled from `prompts.json` at run time)
 - CLIPSeg mask text in `shared` section of prompts.json
 
 ### CLI
