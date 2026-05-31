@@ -22,8 +22,35 @@ def _post_json(url: str, payload: Dict[str, Any], timeout: float = 60.0) -> Any:
         headers={"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        message = raw or str(exc)
+        try:
+            body = json.loads(raw)
+            err = body.get("error") or {}
+            if isinstance(err, dict) and err.get("message"):
+                message = str(err["message"])
+            elif body.get("message"):
+                message = str(body["message"])
+            node_errors = body.get("node_errors")
+            if node_errors:
+                parts: List[str] = []
+                for nid, detail in node_errors.items():
+                    if not isinstance(detail, dict):
+                        continue
+                    for e in detail.get("errors") or []:
+                        if isinstance(e, dict) and e.get("message"):
+                            parts.append(f"node {nid}: {e['message']}")
+                        elif isinstance(e, str):
+                            parts.append(f"node {nid}: {e}")
+                if parts:
+                    message = f"{message} ({'; '.join(parts[:3])})"
+        except json.JSONDecodeError:
+            pass
+        raise RuntimeError(f"HTTP Error {exc.code}: {message}") from exc
 
 
 def comfy_base_url(host: str = "127.0.0.1", port: int = 8188) -> str:

@@ -16,7 +16,7 @@ from .comfy import (
 from .db import connect, insert_batch_run, update_batch_run
 from .learn import build_profile
 from .prompts_store import get_profile, load_prompts
-from .workflow_api import build_api_prompt, fetch_object_info
+from .workflow_api import build_api_prompt, convert_workflow_via_comfy, fetch_object_info
 
 
 def default_input_dir(root: Optional[str] = None) -> str:
@@ -176,7 +176,9 @@ def run_batch(
                 learned=learned,
                 seed=seed,
             )
-            api_prompt = build_api_prompt(wf, object_info)
+            api_prompt = convert_workflow_via_comfy(wf, host=host, port=port)
+            if api_prompt is None:
+                api_prompt = build_api_prompt(wf, object_info)
             pid = queue_prompt(api_prompt, host=host, port=port)
             if pid:
                 prompt_ids.append(pid)

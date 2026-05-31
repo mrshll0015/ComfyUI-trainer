@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -13,6 +12,8 @@ WIDGET_INPUT_TYPES = {
     "combo",
 }
 
+_CONTROL_AFTER_GENERATE = {"fixed", "increment", "decrement", "randomize"}
+
 
 def _input_name_and_type(spec: Any) -> Tuple[str, str]:
     if isinstance(spec, (list, tuple)) and spec:
@@ -20,15 +21,46 @@ def _input_name_and_type(spec: Any) -> Tuple[str, str]:
     return str(spec), "*"
 
 
-def _ordered_inputs(class_type: str, object_info: Dict[str, Any]) -> List[Tuple[str, str]]:
+def _is_widget_input_spec(spec: Any) -> bool:
+    if not isinstance(spec, (list, tuple)) or not spec:
+        return False
+    input_type = spec[0]
+    if isinstance(input_type, (list, tuple)):
+        return True
+    if input_type in WIDGET_INPUT_TYPES:
+        return True
+    if isinstance(input_type, str) and input_type.startswith("COMFY_") and "COMBO" in input_type:
+        return True
+    if isinstance(input_type, str) and not input_type.isupper():
+        return True
+    return False
+
+
+def _widget_names(class_type: str, object_info: Dict[str, Any]) -> List[str]:
     info = object_info.get(class_type) or {}
     inp = info.get("input") or {}
-    ordered: List[Tuple[str, str]] = []
+    names: List[str] = []
     for section in ("required", "optional", "hidden"):
         block = inp.get(section) or {}
         for name, spec in block.items():
-            ordered.append(_input_name_and_type(spec))
-    return ordered
+            if _is_widget_input_spec(spec):
+                names.append(name)
+    return names
+
+
+def _filter_control_values(widget_values: List[Any]) -> List[Any]:
+    filtered: List[Any] = []
+    for i, value in enumerate(widget_values):
+        if value in _CONTROL_AFTER_GENERATE:
+            continue
+        if (
+            i + 1 < len(widget_values)
+            and widget_values[i + 1] in _CONTROL_AFTER_GENERATE
+        ):
+            filtered.append(value)
+            continue
+        filtered.append(value)
+    return filtered
 
 
 def fetch_object_info(
@@ -44,10 +76,33 @@ def fetch_object_info(
     return _get_json(f"{comfy_base_url(host, port)}/object_info", timeout=60.0)
 
 
+def convert_workflow_via_comfy(
+    workflow: Dict[str, Any],
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8188,
+) -> Optional[Dict[str, Any]]:
+    """Use ComfyUI /workflow/convert when the endpoint is available."""
+    from .comfy import _post_json, comfy_base_url
+
+    try:
+        result = _post_json(
+            f"{comfy_base_url(host, port)}/workflow/convert",
+            workflow,
+            timeout=120.0,
+        )
+    except Exception:
+        return None
+    if isinstance(result, dict) and result:
+        return result
+    return None
+
+
 def build_api_prompt(
     workflow: Dict[str, Any],
     object_info: Dict[str, Any],
 ) -> Dict[str, Any]:
+    """Convert ComfyUI workflow JSON (UI export) to API /prompt payload."""
     nodes = {str(n["id"]): n for n in workflow.get("nodes", [])}
 
     links_by_target: Dict[Tuple[str, int], Tuple[str, int]] = {}
@@ -56,48 +111,48 @@ def build_api_prompt(
         links_by_target[key] = (str(link["origin_id"]), int(link["origin_slot"]))
 
     prompt: Dict[str, Any] = {}
+    missing_types: List[str] = []
 
     for node_id, node in nodes.items():
         if node.get("mode") == 4:
             continue
         class_type = node["type"]
         if class_type not in object_info:
-            raise KeyError(f"Unknown node type in ComfyUI: {class_type}")
+            missing_types.append(class_type)
+            continue
 
         inputs: Dict[str, Any] = {}
-        widget_values: List[Any] = []
+        node_input_defs = node.get("inputs") or []
+
+        for slot, inp_def in enumerate(node_input_defs):
+            link_key = (node_id, slot)
+            if link_key not in links_by_target:
+                continue
+            src_id, src_slot = links_by_target[link_key]
+            inputs[inp_def["name"]] = [src_id, src_slot]
+
         wv = node.get("widgets_values")
         if isinstance(wv, dict):
-            widget_values = []
-            dict_widgets = wv
-        elif isinstance(wv, list):
-            widget_values = list(wv)
-            dict_widgets = None
-        else:
-            dict_widgets = None
-
-        widget_idx = 0
-        ordered = _ordered_inputs(class_type, object_info)
-
-        for slot, (inp_name, inp_type) in enumerate(ordered):
-            link_key = (node_id, slot)
-            if link_key in links_by_target:
-                src_id, src_slot = links_by_target[link_key]
-                inputs[inp_name] = [src_id, src_slot]
-            elif inp_type not in WIDGET_INPUT_TYPES and inp_type != "*":
-                continue
-            else:
-                if dict_widgets is not None:
-                    if inp_name in dict_widgets:
-                        inputs[inp_name] = dict_widgets[inp_name]
-                elif widget_idx < len(widget_values):
-                    inputs[inp_name] = widget_values[widget_idx]
-                    widget_idx += 1
-
-        if dict_widgets is not None:
-            for k, v in dict_widgets.items():
-                inputs.setdefault(k, v)
+            for key, value in wv.items():
+                if key in {"videopreview", "preview"}:
+                    continue
+                inputs.setdefault(key, value)
+        elif wv is not None:
+            widget_names = _widget_names(class_type, object_info)
+            filtered = _filter_control_values(list(wv))
+            for i, name in enumerate(widget_names):
+                if name in inputs:
+                    continue
+                if i < len(filtered):
+                    inputs[name] = filtered[i]
 
         prompt[node_id] = {"class_type": class_type, "inputs": inputs}
+
+    if missing_types:
+        unique = sorted(set(missing_types))
+        raise KeyError(
+            "Unknown node types in ComfyUI (install missing custom nodes): "
+            + ", ".join(unique)
+        )
 
     return prompt
