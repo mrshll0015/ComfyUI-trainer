@@ -5,14 +5,7 @@ import os
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
-from .prompts_store import load_prompts, save_prompts
-
-
-SAMPLER_LABELS = ("KSampler",)
-
-
-def _node_label(node: Dict[str, Any]) -> str:
-    return (node.get("properties") or {}).get("Node name for S&R", "")
+from .prompts_store import set_action
 
 
 def apply_profile_to_workflow(
@@ -29,26 +22,10 @@ def apply_profile_to_workflow(
 
     settings = profile.get("settings") or {}
 
-    # Text prompts → prompts.json (not hardcoded in workflow)
-    prompts_data = load_prompts()
-    prof = prompts_data.setdefault(prompt_profile, {"label": prompt_profile, "nodes": {}})
-    nodes_map = prof.setdefault("nodes", {})
     text_updated = 0
-    slug_to_label = {
-        "positive_inpaint_1": "Positive inpaint 1",
-        "positive_inpaint_2_lower_body": "Positive inpaint 2 lower body",
-        "video_motion_prompt": "Video motion prompt",
-        "skin_tone_prompt_photo_plus_inpaint": "Skin tone prompt (photo + inpaint)",
-        "skin_tone_prompt_video": "Skin tone prompt (video)",
-        "negative_inpaint_1": "Negative inpaint 1",
-        "negative_inpaint_2": "Negative inpaint 2",
-        "video_negative": "Video negative",
-    }
-    for slug, label in slug_to_label.items():
-        if slug in settings and settings[slug]:
-            nodes_map[label] = settings[slug]
-            text_updated += 1
-    save_prompts(prompts_data)
+    if isinstance(settings.get("action"), str) and settings["action"].strip():
+        set_action(prompt_profile, settings["action"].strip())
+        text_updated = 1
 
     # Numeric sampler settings → workflow file
     updated = 0

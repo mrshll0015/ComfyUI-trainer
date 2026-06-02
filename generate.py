@@ -14,8 +14,8 @@ from .comfy import (
     sync_history_to_generations,
 )
 from .db import connect, insert_batch_run, update_batch_run
-from .learn import build_profile
-from .prompts_store import get_profile, load_prompts
+from .learn import build_profile, capture_run_json_from_workflow
+from .prompts_store import get_profile, get_training_settings, load_prompts
 from .workflow_api import build_api_prompt, convert_workflow_via_comfy, fetch_object_info
 
 
@@ -91,13 +91,17 @@ def _prepare_workflow_dict(
     prompt_profile: str,
     learned: Optional[Dict[str, Any]] = None,
     seed: Optional[int] = None,
+    action: Optional[str] = None,
 ) -> Dict[str, Any]:
     with open(workflow_path, encoding="utf-8") as f:
         wf = json.load(f)
 
-    profile_nodes = get_profile(prompt_profile)
+    profile_nodes = get_profile(prompt_profile, action_override=action)
     prompts_data = load_prompts()
     shared = prompts_data.get("shared") or {}
+    training = get_training_settings()
+    max_dim = training["max_dimension"]
+    video_frames = training["video_frames"]
 
     clipseg_by_id = {48: "clipseg_upper", 69: "clipseg_lower", 73: "clipseg_cleanup"}
 
@@ -108,6 +112,24 @@ def _prepare_workflow_dict(
         if class_type == "LoadImage":
             wv = node.setdefault("widgets_values", ["", "image"])
             wv[0] = image_name
+
+        elif class_type == "ImageScaleToMaxDimension":
+            wv = node.setdefault("widgets_values", ["lanczos", max_dim])
+            if len(wv) >= 2:
+                wv[1] = max_dim
+
+        elif class_type == "MathExpression|pysssss":
+            wv = node.setdefault("widgets_values", [f"(min(a, {max_dim})//16)*16"])
+            if wv:
+                wv[0] = f"(min(a, {max_dim})//16)*16"
+
+        elif class_type == "WanImageToVideo":
+            wv = node.setdefault("widgets_values", [video_frames, 1])
+            frames = video_frames
+            if learned and "frames" in learned:
+                frames = int(learned["frames"])
+            if wv:
+                wv[0] = frames
 
         elif class_type == "CLIPTextEncode" and label:
             text = profile_nodes.get(label, "")
@@ -128,11 +150,6 @@ def _prepare_workflow_dict(
             if "cfg" in learned and len(wv) >= 4:
                 wv[3] = learned["cfg"]
 
-        elif class_type == "WanImageToVideo" and learned and "frames" in learned:
-            wv = node.setdefault("widgets_values", [49, 1])
-            if wv:
-                wv[0] = learned["frames"]
-
         elif class_type == "VHS_VideoCombine" and learned and "fps" in learned:
             wv = node.get("widgets_values")
             if isinstance(wv, dict):
@@ -144,15 +161,21 @@ def _prepare_workflow_dict(
 def run_batch(
     *,
     workflow: str,
-    image_name: str,
+    image_names: List[str],
     prompt_profile: str = "prompt_1",
-    count: int = 10,
+    action: Optional[str] = None,
     host: str = "127.0.0.1",
     port: int = 8188,
 ) -> Dict[str, Any]:
+    """Queue one video generation per input photo (max 10)."""
+    if not image_names:
+        raise ValueError("image_names required")
+    image_names = list(image_names[:10])
+
     workflow_path = default_workflow_path(workflow)
     learned = _learned_settings(workflow)
     object_info = fetch_object_info(host=host, port=port)
+    count = len(image_names)
 
     conn = connect()
     batch_id = insert_batch_run(
@@ -160,14 +183,15 @@ def run_batch(
         workflow=workflow,
         prompt_profile=prompt_profile,
         count=count,
-        image_name=image_name,
+        image_name=json.dumps(image_names),
     )
 
     prompt_ids: List[str] = []
+    prompt_runs: Dict[str, Any] = {}
     errors: List[str] = []
 
     try:
-        for i in range(count):
+        for i, image_name in enumerate(image_names):
             seed = random.randint(1, 2**31 - 1)
             wf = _prepare_workflow_dict(
                 workflow_path,
@@ -175,6 +199,13 @@ def run_batch(
                 prompt_profile=prompt_profile,
                 learned=learned,
                 seed=seed,
+                action=action,
+            )
+            run_json = capture_run_json_from_workflow(
+                wf,
+                prompt_profile=prompt_profile,
+                source_image=image_name,
+                action=action,
             )
             api_prompt = convert_workflow_via_comfy(wf, host=host, port=port)
             if api_prompt is None:
@@ -182,8 +213,9 @@ def run_batch(
             pid = queue_prompt(api_prompt, host=host, port=port)
             if pid:
                 prompt_ids.append(pid)
+                prompt_runs[pid] = run_json
             else:
-                errors.append(f"run {i+1}: empty prompt_id")
+                errors.append(f"photo {i + 1}: empty prompt_id")
 
         update_batch_run(
             conn,
@@ -191,6 +223,7 @@ def run_batch(
             status="queued",
             queued=len(prompt_ids),
             prompt_ids=prompt_ids,
+            prompt_runs=prompt_runs,
             error="; ".join(errors) if errors else None,
         )
     except Exception as exc:
@@ -200,7 +233,9 @@ def run_batch(
     return {
         "batch_id": batch_id,
         "queued": len(prompt_ids),
+        "photos": len(image_names),
         "prompt_ids": prompt_ids,
+        "image_names": image_names,
         "prompt_profile": prompt_profile,
         "errors": errors,
     }

@@ -10,7 +10,7 @@
   <header class="header">
     <div>
       <h1>Generation Trainer</h1>
-      <p class="subtitle">Upload → generate ×10 → rate → auto-learn</p>
+      <p class="subtitle">10 photos → 10 videos → rate · one action prompt</p>
     </div>
     <div class="header-actions">
       <span id="comfyStatus" class="badge">ComfyUI …</span>
@@ -22,43 +22,45 @@
   <nav class="main-nav">
     <button class="nav-btn active" data-view="generate">Generate</button>
     <button class="nav-btn" data-view="rate">Rate</button>
-    <button class="nav-btn" data-view="prompts">Prompts</button>
   </nav>
 
   <!-- GENERATE -->
   <section id="viewGenerate" class="view">
     <div class="panel">
-      <h2>1. Upload training photo</h2>
+      <h2>1. Upload photos <span class="hint">up to 10</span></h2>
       <div class="upload-row">
-        <input type="file" id="photoInput" accept="image/*" />
-        <img id="uploadPreview" class="upload-preview hidden" alt="preview" />
-        <span id="uploadName" class="muted"></span>
+        <input type="file" id="photoInput" accept="image/*" multiple />
+        <span id="uploadName" class="muted">No photos selected</span>
       </div>
+      <div id="uploadGrid" class="upload-grid"></div>
     </div>
 
     <div class="panel">
-      <h2>2. Run batch generation</h2>
+      <h2>2. What should happen <span class="hint">one line — model builds the rest</span></h2>
+      <label class="action-label">
+        <textarea id="actionInput" rows="2" placeholder="e.g. she waves her hand slowly, friendly smile"></textarea>
+      </label>
       <div class="gen-options">
-        <label>Prompt profile
+        <label>Profile
           <select id="promptProfile">
-            <option value="prompt_1">Prompt 1</option>
-            <option value="prompt_2">Prompt 2</option>
+            <option value="prompt_1">Profile 1</option>
+            <option value="prompt_2">Profile 2</option>
           </select>
         </label>
-        <label>Generations
-          <select id="genCount">
-            <option value="10" selected>10</option>
-            <option value="5">5</option>
-            <option value="3">3</option>
-            <option value="1">1</option>
-          </select>
-        </label>
-        <button id="generateBtn" class="btn primary" disabled>Generate</button>
+        <button id="generateBtn" class="btn primary" disabled>Generate videos</button>
       </div>
+      <p class="muted gen-hint">Training mode: 384px max · 33 frames · one video per photo</p>
       <div id="genProgress" class="gen-progress hidden">
         <div class="progress-bar"><div id="progressFill"></div></div>
         <p id="genStatusText" class="muted"></p>
       </div>
+    </div>
+
+    <div class="panel" id="learnStatusPanel">
+      <h2>Learning status</h2>
+      <p id="learnStatusText" class="muted">Checking…</p>
+      <ul id="learnBlockers" class="learn-blockers hidden"></ul>
+      <p id="learnSettings" class="learn-settings hidden"></p>
     </div>
 
     <div class="panel highlight" id="afterGenPanel">
@@ -81,7 +83,7 @@
         <ul id="queueList" class="queue-list"></ul>
         <section class="profile-card">
           <h3>Learned profile</h3>
-          <p id="profileEmpty" class="muted">Rate generations to build learned profile.</p>
+          <p id="profileEmpty" class="muted">Rate videos to build profile. Apply manually when ready.</p>
           <pre id="profileJson" class="profile-json hidden"></pre>
           <button id="applyBtn" class="btn ghost">Apply learned profile</button>
         </section>
@@ -100,8 +102,8 @@
           <form id="ratingForm">
             <h2>Rate <span class="hint">1 = bad · 10 = excellent</span></h2>
             <div class="sliders" id="sliders"></div>
-            <label class="comment-label">Comment
-              <textarea id="comment" rows="3" placeholder="extra fingers, wrong skin tone…"></textarea>
+            <label class="comment-label">Comment <span class="hint">optional</span>
+              <textarea id="comment" rows="2" placeholder="what went wrong…"></textarea>
             </label>
             <div class="form-actions">
               <button type="submit" class="btn primary">Save rating</button>
@@ -111,19 +113,6 @@
         </div>
       </section>
     </main>
-  </section>
-
-  <!-- PROMPTS -->
-  <section id="viewPrompts" class="view hidden">
-    <div class="panel">
-      <h2>Prompt profiles <span class="hint">stored in trainer/prompts.json — not in code</span></h2>
-      <div class="prompt-tabs">
-        <button class="tab active" data-prompt="prompt_1">Prompt 1</button>
-        <button class="tab" data-prompt="prompt_2">Prompt 2</button>
-      </div>
-      <div id="promptFields" class="prompt-fields"></div>
-      <button id="savePromptsBtn" class="btn primary">Save prompts</button>
-    </div>
   </section>
 
   <div id="toast" class="toast hidden"></div>

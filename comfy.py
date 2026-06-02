@@ -142,8 +142,18 @@ def _node_label(node: Dict[str, Any]) -> str:
     return props.get("Node name for S&R") or props.get("title") or node.get("class_type", "")
 
 
-def extract_run_settings(prompt: Dict[str, Any]) -> Dict[str, Any]:
+def extract_run_settings(
+    prompt: Dict[str, Any],
+    workflow: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Extract tunable settings from a ComfyUI API prompt dict."""
+    id_to_label: Dict[str, str] = {}
+    if workflow:
+        for node in workflow.get("nodes", []):
+            label = _node_label(node)
+            if label:
+                id_to_label[str(node["id"])] = label
+
     run: Dict[str, Any] = {"nodes": {}}
 
     for node_id, node in prompt.items():
@@ -151,13 +161,12 @@ def extract_run_settings(prompt: Dict[str, Any]) -> Dict[str, Any]:
             continue
         class_type = node.get("class_type", "")
         inputs = node.get("inputs", {}) or {}
-        label = _node_label(node)
+        label = id_to_label.get(str(node_id)) or _node_label(node) or f"{class_type}_{node_id}"
 
         if class_type == "CLIPTextEncode":
             text = inputs.get("text")
             if isinstance(text, str) and text.strip():
-                key = label or f"CLIPTextEncode_{node_id}"
-                run["nodes"][key] = {"type": class_type, "text": text}
+                run["nodes"][label] = {"type": class_type, "text": text}
 
         elif class_type == "KSampler":
             run["nodes"][label or f"KSampler_{node_id}"] = {
@@ -208,6 +217,15 @@ def extract_run_settings(prompt: Dict[str, Any]) -> Dict[str, Any]:
             slug = key.lower().replace(" ", "_").replace("+", "plus").replace("(", "").replace(")", "")
             run[slug] = node["text"]
 
+    video_node = run["nodes"].get("Video motion prompt")
+    if video_node and video_node.get("text"):
+        from .prompts_store import load_prompts, _strip_prefix
+
+        prefix = (load_prompts().get("system") or {}).get("video_prefix", "")
+        action = _strip_prefix(video_node["text"], prefix)
+        if action:
+            run["action"] = action
+
     return run
 
 
@@ -231,18 +249,27 @@ def sync_history_to_generations(
     host: str = "127.0.0.1",
     port: int = 8188,
     output_dir: Optional[str] = None,
+    workflow_path: Optional[str] = None,
 ) -> List[int]:
-    from .db import insert_generation
+    from .db import insert_generation, lookup_run_json_for_prompt
     from .util import sha256_file
 
     history = fetch_history(host=host, port=port)
     created: List[int] = []
     out_dir = output_dir or default_output_dir()
 
+    wf: Optional[Dict[str, Any]] = None
+    wf_path = workflow_path or default_workflow_path(workflow)
+    if os.path.isfile(wf_path):
+        with open(wf_path, encoding="utf-8") as f:
+            wf = json.load(f)
+
     for prompt_id, entry in history.items():
         prompt = entry.get("prompt") or []
         prompt_dict = prompt[2] if len(prompt) >= 3 and isinstance(prompt[2], dict) else {}
-        run_json = extract_run_settings(prompt_dict) if prompt_dict else None
+        run_json = lookup_run_json_for_prompt(conn, prompt_id)
+        if run_json is None and prompt_dict:
+            run_json = extract_run_settings(prompt_dict, workflow=wf)
 
         for filename, subfolder, media_type in _collect_outputs(entry):
             file_path = resolve_output_path(filename, subfolder=subfolder, output_dir=out_dir)

@@ -68,6 +68,7 @@ MIGRATIONS = [
     "ALTER TABLE ratings ADD COLUMN fingers INTEGER NOT NULL DEFAULT 5 CHECK (fingers BETWEEN 1 AND 10)",
     "ALTER TABLE ratings ADD COLUMN body INTEGER NOT NULL DEFAULT 5 CHECK (body BETWEEN 1 AND 10)",
     "ALTER TABLE ratings ADD COLUMN skin_tone INTEGER NOT NULL DEFAULT 5 CHECK (skin_tone BETWEEN 1 AND 10)",
+    "ALTER TABLE batch_runs ADD COLUMN prompt_runs TEXT",
 ]
 
 
@@ -89,15 +90,14 @@ class Rating:
 RATING_FIELDS = (
     "overall",
     "face",
-    "identity",
     "hands",
     "fingers",
     "body",
     "skin_tone",
-    "motion",
-    "lighting",
-    "artifacts",
 )
+
+# Kept in DB for older rows; UI no longer collects these separately.
+LEGACY_RATING_FIELDS = ("identity", "motion", "lighting", "artifacts")
 
 
 def _default_db_path() -> str:
@@ -140,7 +140,14 @@ def insert_generation(
             (prompt_id,),
         ).fetchone()
         if row:
-            return int(row["id"])
+            gen_id = int(row["id"])
+            if run_json is not None:
+                conn.execute(
+                    "UPDATE generations SET run_json = ? WHERE id = ?",
+                    (json.dumps(run_json, ensure_ascii=False), gen_id),
+                )
+                conn.commit()
+            return gen_id
 
     created_at = int(time.time())
     run_json_text = json.dumps(run_json, ensure_ascii=False) if run_json is not None else None
@@ -261,6 +268,26 @@ def list_generations(
     ).fetchall()
 
 
+def lookup_run_json_for_prompt(conn, prompt_id: str) -> Optional[Dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT prompt_runs, prompt_ids FROM batch_runs
+        WHERE prompt_runs IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 30
+        """
+    ).fetchall()
+    for row in rows:
+        try:
+            runs = json.loads(row["prompt_runs"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        if prompt_id in runs:
+            data = runs[prompt_id]
+            return data if isinstance(data, dict) else None
+    return None
+
+
 def rated_runs(conn: sqlite3.Connection, workflow: str) -> List[sqlite3.Row]:
     return conn.execute(
         """
@@ -274,8 +301,7 @@ def rated_runs(conn: sqlite3.Connection, workflow: str) -> List[sqlite3.Row]:
           r.overall, r.face, r.motion, r.lighting, r.artifacts, r.identity,
           r.hands, r.fingers, r.body, r.skin_tone,
           (
-            r.overall * 3 + r.identity * 2 + r.face * 2 + r.hands + r.fingers +
-            r.body + r.skin_tone + r.motion + r.lighting + r.artifacts
+            r.overall * 3 + r.face + r.hands + r.fingers + r.body + r.skin_tone
           ) AS weighted_score
         FROM generations g
         JOIN ratings r ON r.generation_id = g.id
@@ -344,6 +370,7 @@ def update_batch_run(
     completed: Optional[int] = None,
     synced: Optional[int] = None,
     prompt_ids: Optional[List[str]] = None,
+    prompt_runs: Optional[Dict[str, Any]] = None,
     error: Optional[str] = None,
 ) -> None:
     fields: List[str] = []
@@ -363,6 +390,9 @@ def update_batch_run(
     if prompt_ids is not None:
         fields.append("prompt_ids = ?")
         params.append(json.dumps(prompt_ids))
+    if prompt_runs is not None:
+        fields.append("prompt_runs = ?")
+        params.append(json.dumps(prompt_runs, ensure_ascii=False))
     if error is not None:
         fields.append("error = ?")
         params.append(error)

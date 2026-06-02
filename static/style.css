@@ -93,8 +93,46 @@ h2 { margin: 0 0 0.75rem; font-size: 1.05rem; }
 .badge.bad { color: var(--danger); border-color: #6b2f2f; }
 .badge.warn { color: var(--warn); border-color: #6b5220; }
 
+.action-label {
+  display: block;
+  margin-bottom: 0.75rem;
+}
+.action-label textarea {
+  width: 100%;
+  background: #141925;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  font-family: inherit;
+  font-size: 0.95rem;
+  resize: vertical;
+  min-height: 52px;
+}
+
+.upload-preview {
+  max-width: 120px;
+  max-height: 120px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.upload-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.upload-grid img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.gen-hint { margin: 0 0 0.75rem; font-size: 0.9rem; }
+
 .upload-row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
-.upload-preview { max-height: 120px; border-radius: 8px; border: 1px solid var(--border); }
 
 .gen-options { display: flex; flex-wrap: wrap; gap: 1rem; align-items: end; }
 .gen-options label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; color: var(--muted); }
@@ -178,6 +216,18 @@ h2 { margin: 0 0 0.75rem; font-size: 1.05rem; }
   max-height: 180px;
   overflow: auto;
   margin: 0 0 0.5rem;
+}
+
+.learn-blockers {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+  color: var(--warn);
+  font-size: 0.85rem;
+}
+.learn-settings {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--ok);
 }
 
 .prompt-fields { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1rem; }

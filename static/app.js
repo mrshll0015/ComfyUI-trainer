@@ -1,34 +1,21 @@
 const CRITERIA = [
-  { key: "overall", label: "Overall" },
+  { key: "overall", label: "Correct result" },
   { key: "face", label: "Face" },
-  { key: "identity", label: "Identity match" },
   { key: "hands", label: "Hands" },
   { key: "fingers", label: "Fingers" },
-  { key: "body", label: "Body anatomy" },
+  { key: "body", label: "Body" },
   { key: "skin_tone", label: "Skin tone" },
-  { key: "motion", label: "Motion / pose" },
-  { key: "lighting", label: "Lighting" },
-  { key: "artifacts", label: "Few artifacts" },
 ];
 
-const PROMPT_LABELS = [
-  "Positive inpaint 1",
-  "Negative inpaint 1",
-  "Positive inpaint 2 lower body",
-  "Negative inpaint 2",
-  "Video motion prompt",
-  "Video negative",
-  "Skin tone prompt (photo + inpaint)",
-  "Skin tone prompt (video)",
-];
+const MAX_PHOTOS = 10;
 
 let currentView = "generate";
 let currentTab = "pending";
 let items = [];
 let selectedId = null;
-let uploadedImage = null;
+let uploadedImages = [];
+let uploadPreviewUrls = [];
 let promptsData = null;
-let activePromptProfile = "prompt_1";
 let batchPollTimer = null;
 
 const $ = (sel) => document.querySelector(sel);
@@ -57,9 +44,17 @@ function showView(name) {
   });
   $("#viewGenerate").classList.toggle("hidden", name !== "generate");
   $("#viewRate").classList.toggle("hidden", name !== "rate");
-  $("#viewPrompts").classList.toggle("hidden", name !== "prompts");
   if (name === "rate") loadHistory();
-  if (name === "prompts") loadPromptsEditor();
+}
+
+async function loadActionForProfile() {
+  promptsData = await api("/api/prompts");
+  const profile = $("#promptProfile").value;
+  $("#actionInput").value = promptsData[profile]?.action || "";
+}
+
+function currentAction() {
+  return ($("#actionInput").value || "").trim();
 }
 
 function buildSliders() {
@@ -105,6 +100,45 @@ function updatePendingUI(stats) {
   }
 }
 
+function updateLearnUI(learn) {
+  if (!learn) return;
+  const text = $("#learnStatusText");
+  const blockers = $("#learnBlockers");
+  const settings = $("#learnSettings");
+  if (!text) return;
+
+  const stageLabels = {
+    idle: "Idle — generate a batch to begin",
+    sync_needed: "Sync needed — run settings not saved yet",
+    rating: "Rating — score outputs to start learning",
+    learning: "Learning active — profile built from ratings",
+    profile_empty: "Rated but profile has no settings yet",
+    blocked: "Blocked — check issues below",
+  };
+  const stage = learn.stage || "idle";
+  const active = learn.learning_active ? "yes" : "no";
+  text.textContent =
+    `${stageLabels[stage] || stage} · learning active: ${active} · ` +
+    `gens ${learn.generations_with_run_json}/${learn.generations_total} with run_json · ` +
+    `ratings ${learn.ratings_count} (${learn.rated_with_run_json} usable)`;
+
+  if (learn.blockers?.length) {
+    blockers.classList.remove("hidden");
+    blockers.innerHTML = learn.blockers.map((b) => `<li>${b}</li>`).join("");
+  } else {
+    blockers.classList.add("hidden");
+    blockers.innerHTML = "";
+  }
+
+  if (learn.settings_learned?.length) {
+    settings.classList.remove("hidden");
+    settings.textContent = `Learned keys: ${learn.settings_learned.join(", ")}`;
+  } else {
+    settings.classList.add("hidden");
+    settings.textContent = "";
+  }
+}
+
 async function refreshStats() {
   try {
     const h = await api("/api/health");
@@ -112,11 +146,54 @@ async function refreshStats() {
     el.textContent = h.comfy_ui ? "ComfyUI online" : "ComfyUI offline";
     el.className = "badge " + (h.comfy_ui ? "ok" : "bad");
     updatePendingUI(h.pending);
+    updateLearnUI(h.learn);
     return h.pending;
   } catch {
     $("#comfyStatus").textContent = "Trainer error";
     $("#comfyStatus").className = "badge bad";
     return { total: 0, videos: 0 };
+  }
+}
+
+function parseAction(item) {
+  if (!item?.run_json) return "";
+  try {
+    const run = typeof item.run_json === "string" ? JSON.parse(item.run_json) : item.run_json;
+    return run.action || "";
+  } catch {
+    return "";
+  }
+}
+
+function parseSourceImage(item) {
+  if (!item?.run_json) return "";
+  try {
+    const run = typeof item.run_json === "string" ? JSON.parse(item.run_json) : item.run_json;
+    return run.source_image || "";
+  } catch {
+    return "";
+  }
+}
+
+function updateGenerateBtn() {
+  const n = uploadedImages.length;
+  const btn = $("#generateBtn");
+  btn.disabled = n === 0;
+  btn.textContent = n === 1 ? "Generate 1 video" : `Generate ${n} videos`;
+}
+
+function renderUploadGrid(files) {
+  const grid = $("#uploadGrid");
+  grid.innerHTML = "";
+  uploadPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+  uploadPreviewUrls = [];
+  for (const file of files) {
+    const url = URL.createObjectURL(file);
+    uploadPreviewUrls.push(url);
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = file.name;
+    grid.appendChild(img);
   }
 }
 
@@ -136,8 +213,9 @@ function renderQueue() {
     const li = document.createElement("li");
     li.className = "queue-item" + (item.id === selectedId ? " active" : "");
     const name = (item.file_path || "").split("/").pop();
+    const src = parseSourceImage(item);
     const score = item.overall != null ? `Rated · ${item.overall}/10` : "Not rated";
-    li.innerHTML = `<div class="name">${name}</div><div class="score">${score}</div>`;
+    li.innerHTML = `<div class="name">${name}</div><div class="score">${score}${src ? ` · ${src}` : ""}</div>`;
     li.onclick = () => selectItem(item.id);
     list.appendChild(li);
   }
@@ -166,8 +244,12 @@ function selectItem(id) {
     img.classList.remove("hidden");
   }
 
+  const src = parseSourceImage(item);
+  const act = parseAction(item);
   $("#metaInfo").innerHTML = `
     <div><strong>ID</strong> ${item.id} · ${item.media_type || "image"}</div>
+    ${act ? `<div><strong>Action</strong> ${act}</div>` : ""}
+    ${src ? `<div><strong>Source photo</strong> ${src}</div>` : ""}
     <div>${item.file_path || ""}</div>
     <div>${new Date((item.created_at || 0) * 1000).toLocaleString()}</div>
   `;
@@ -209,6 +291,7 @@ async function syncAndStartRating() {
     const r = await api("/api/sync", { method: "POST", body: "{}" });
     toast(`Synced ${r.synced} outputs`);
     updatePendingUI(r.pending);
+    updateLearnUI(r.learn);
     showView("rate");
     currentTab = "pending";
     document.querySelectorAll("#viewRate .tab").forEach((t) => {
@@ -225,31 +308,40 @@ async function syncAndStartRating() {
 async function applyProfile() {
   try {
     const r = await api("/api/apply", { method: "POST", body: JSON.stringify({ explore: false }) });
-    toast(`Applied profile (${r.result.text_fields_updated} prompts, ${r.result.sampler_fields_updated} sampler fields)`);
+    toast(`Applied profile (${r.result.text_fields_updated} action, ${r.result.sampler_fields_updated} sampler fields)`);
     await loadProfile();
   } catch (e) {
     toast(e.message);
   }
 }
 
-// Upload
+// Upload (up to 10 photos)
 $("#photoInput").addEventListener("change", async (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
+  const files = Array.from(e.target.files || []).slice(0, MAX_PHOTOS);
+  if (!files.length) return;
+  if ((e.target.files || []).length > MAX_PHOTOS) {
+    toast(`Only first ${MAX_PHOTOS} photos used`);
+  }
+
   const fd = new FormData();
-  fd.append("file", file);
+  for (const file of files) fd.append("file", file);
+
   $("#generateBtn").disabled = true;
+  $("#uploadName").textContent = `Uploading ${files.length} photo(s)…`;
+  renderUploadGrid(files);
+
   try {
     const res = await fetch("/api/upload", { method: "POST", body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Upload failed");
-    uploadedImage = data.filename;
-    $("#uploadName").textContent = uploadedImage;
-    $("#uploadPreview").src = URL.createObjectURL(file);
-    $("#uploadPreview").classList.remove("hidden");
-    $("#generateBtn").disabled = false;
-    toast("Photo uploaded");
+    uploadedImages = data.filenames || (data.filename ? [data.filename] : []);
+    $("#uploadName").textContent = `${uploadedImages.length} photo(s) ready`;
+    updateGenerateBtn();
+    toast(`Uploaded ${uploadedImages.length} photo(s)`);
   } catch (err) {
+    uploadedImages = [];
+    renderUploadGrid([]);
+    updateGenerateBtn();
     toast(err.message);
   }
 });
@@ -278,71 +370,28 @@ function pollBatch(batchId, total) {
 }
 
 $("#generateBtn").onclick = async () => {
-  if (!uploadedImage) return toast("Upload a photo first");
+  if (!uploadedImages.length) return toast("Upload photos first");
+  const action = currentAction();
+  if (!action) return toast("Describe what should happen (one line)");
   $("#generateBtn").disabled = true;
+  const count = uploadedImages.length;
   try {
     const body = {
-      image_name: uploadedImage,
+      image_names: uploadedImages,
       prompt_profile: $("#promptProfile").value,
-      count: Number($("#genCount").value),
+      action,
     };
     const r = await api("/api/generate", { method: "POST", body: JSON.stringify(body) });
-    toast(`Queued ${r.queued} generations (${body.prompt_profile})`);
-    pollBatch(r.batch_id, body.count);
+    toast(`Queued ${r.queued} video(s) — 1 per photo`);
+    pollBatch(r.batch_id, count);
   } catch (e) {
     toast(e.message);
   } finally {
-    $("#generateBtn").disabled = false;
+    updateGenerateBtn();
   }
 };
 
-// Prompts editor
-async function loadPromptsEditor() {
-  promptsData = await api("/api/prompts");
-  renderPromptFields();
-}
-
-function renderPromptFields() {
-  const wrap = $("#promptFields");
-  wrap.innerHTML = "";
-  const prof = promptsData[activePromptProfile];
-  if (!prof) return;
-  for (const label of PROMPT_LABELS) {
-    const val = prof.nodes?.[label] || "";
-    const id = `pf_${label.replace(/\W+/g, "_")}`;
-    wrap.innerHTML += `
-      <label for="${id}">${label}
-        <textarea id="${id}" data-label="${label}">${val}</textarea>
-      </label>`;
-  }
-}
-
-$("#savePromptsBtn").onclick = async () => {
-  if (!promptsData) await loadPromptsEditor();
-  const prof = promptsData[activePromptProfile];
-  document.querySelectorAll("#promptFields textarea").forEach((ta) => {
-    prof.nodes[ta.dataset.label] = ta.value;
-  });
-  try {
-    await fetch("/api/prompts", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(promptsData),
-    });
-    toast("Prompts saved");
-  } catch (e) {
-    toast("Save failed");
-  }
-};
-
-document.querySelectorAll(".prompt-tabs .tab").forEach((tab) => {
-  tab.onclick = () => {
-    document.querySelectorAll(".prompt-tabs .tab").forEach((t) => t.classList.remove("active"));
-    tab.classList.add("active");
-    activePromptProfile = tab.dataset.prompt;
-    renderPromptFields();
-  };
-});
+$("#promptProfile").addEventListener("change", loadActionForProfile);
 
 $("#ratingForm").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -353,8 +402,9 @@ $("#ratingForm").addEventListener("submit", async (e) => {
   }
   try {
     const r = await api("/api/rate", { method: "POST", body: JSON.stringify(body) });
-    toast("Rating saved — profile updated");
+    toast(r.learn?.learning_active ? "Rating saved — learning active" : "Rating saved — see Learning status");
     updatePendingUI(r.pending);
+    updateLearnUI(r.learn);
     if (r.profile) {
       $("#profileEmpty").classList.add("hidden");
       $("#profileJson").classList.remove("hidden");
@@ -399,6 +449,8 @@ $("#startRateBtn").onclick = syncAndStartRating;
 $("#applyBtn").onclick = applyProfile;
 
 buildSliders();
+updateGenerateBtn();
+loadActionForProfile();
 refreshStats();
 loadProfile();
 setInterval(refreshStats, 15000);

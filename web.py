@@ -23,8 +23,8 @@ from .comfy import (
 )
 from .db import Rating, connect, count_pending, insert_rating, list_generations
 from .generate import poll_batch, run_batch, upload_image_bytes
-from .learn import build_profile
-from .prompts_store import get_profile, load_prompts, save_prompts, update_profile
+from .learn import build_profile, learn_status
+from .prompts_store import get_profile, load_prompts, set_action
 from .util import clamp_int
 
 
@@ -48,6 +48,43 @@ def _read_json(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
     length = int(handler.headers.get("Content-Length", "0") or 0)
     raw = handler.rfile.read(length) if length else b"{}"
     return json.loads(raw.decode("utf-8") or "{}")
+
+
+def _iter_upload_files(form: cgi.FieldStorage) -> List[cgi.FieldStorage]:
+    items: List[cgi.FieldStorage] = []
+    if not form.list:
+        return items
+    for key in form:
+        if key != "file":
+            continue
+        val = form[key]
+        if isinstance(val, list):
+            items.extend(val)
+        else:
+            items.append(val)
+    return items
+
+
+def _rating_from_body(body: Dict[str, Any]) -> Rating:
+    overall = clamp_int(int(body.get("overall", 5)), 1, 10)
+    face = clamp_int(int(body.get("face", overall)), 1, 10)
+    hands = clamp_int(int(body.get("hands", overall)), 1, 10)
+    fingers = clamp_int(int(body.get("fingers", overall)), 1, 10)
+    body_score = clamp_int(int(body.get("body", overall)), 1, 10)
+    skin_tone = clamp_int(int(body.get("skin_tone", overall)), 1, 10)
+    return Rating(
+        overall=overall,
+        face=face,
+        hands=hands,
+        fingers=fingers,
+        body=body_score,
+        skin_tone=skin_tone,
+        identity=overall,
+        motion=overall,
+        lighting=overall,
+        artifacts=overall,
+        comment=str(body.get("comment", "")).strip(),
+    )
 
 
 def _row_to_dict(row) -> Dict[str, Any]:
@@ -80,6 +117,7 @@ class TrainerHandler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 conn = connect()
                 pending = count_pending(conn, workflow=DEFAULT_WORKFLOW)
+                learn = learn_status(conn, DEFAULT_WORKFLOW)
                 return _json_response(
                     self,
                     200,
@@ -89,6 +127,7 @@ class TrainerHandler(BaseHTTPRequestHandler):
                         "comfy_url": comfy_base_url(COMFY_HOST, COMFY_PORT),
                         "workflow": DEFAULT_WORKFLOW,
                         "pending": pending,
+                        "learn": learn,
                     },
                 )
             if path == "/api/stats":
@@ -96,7 +135,15 @@ class TrainerHandler(BaseHTTPRequestHandler):
                 pending = count_pending(conn, workflow=qs.get("workflow", [DEFAULT_WORKFLOW])[0])
                 return _json_response(self, 200, pending)
             if path == "/api/prompts":
-                return _json_response(self, 200, load_prompts())
+                data = load_prompts()
+                return _json_response(
+                    self,
+                    200,
+                    {
+                        "prompt_1": {"label": data["prompt_1"].get("label"), "action": data["prompt_1"].get("action", "")},
+                        "prompt_2": {"label": data["prompt_2"].get("label"), "action": data["prompt_2"].get("action", "")},
+                    },
+                )
             if path == "/api/history":
                 workflow = qs.get("workflow", [DEFAULT_WORKFLOW])[0]
                 pending = qs.get("pending", ["0"])[0] == "1"
@@ -119,6 +166,10 @@ class TrainerHandler(BaseHTTPRequestHandler):
                 if not profile:
                     return _json_response(self, 404, {"error": "No ratings yet."})
                 return _json_response(self, 200, profile)
+            if path == "/api/learn/status":
+                workflow = qs.get("workflow", [DEFAULT_WORKFLOW])[0]
+                conn = connect()
+                return _json_response(self, 200, learn_status(conn, workflow))
             if path == "/api/generate/status":
                 batch_id = int(qs.get("batch_id", ["0"])[0])
                 workflow = qs.get("workflow", [DEFAULT_WORKFLOW])[0]
@@ -138,7 +189,9 @@ class TrainerHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/prompts":
                 body = _read_json(self)
-                save_prompts(body)
+                for key in ("prompt_1", "prompt_2"):
+                    if key in body and isinstance(body[key], dict) and "action" in body[key]:
+                        set_action(key, str(body[key]["action"]))
                 return _json_response(self, 200, {"ok": True})
             return _json_response(self, 404, {"error": "Not found"})
         except Exception as exc:
@@ -161,12 +214,14 @@ class TrainerHandler(BaseHTTPRequestHandler):
                     workflow=workflow,
                     host=COMFY_HOST,
                     port=COMFY_PORT,
+                    workflow_path=default_workflow_path(workflow),
                 )
                 pending = count_pending(conn, workflow=workflow)
+                learn = learn_status(conn, workflow)
                 return _json_response(
                     self,
                     200,
-                    {"synced": len(ids), "generation_ids": ids, "pending": pending},
+                    {"synced": len(ids), "generation_ids": ids, "pending": pending, "learn": learn},
                 )
             if parsed.path == "/api/rate":
                 return self._handle_rate()
@@ -241,38 +296,62 @@ class TrainerHandler(BaseHTTPRequestHandler):
             "CONTENT_TYPE": content_type,
         }
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ=environ)
-        if "file" not in form:
+        file_items = _iter_upload_files(form)
+        if not file_items:
             return _json_response(self, 400, {"error": "file field required"})
-        item = form["file"]
-        if not item.file:
-            return _json_response(self, 400, {"error": "empty file"})
-        raw = item.file.read()
-        orig = item.filename or "upload.png"
-        ext = os.path.splitext(orig)[1].lower() or ".png"
-        name = f"trainer_{uuid.uuid4().hex[:12]}{ext}"
+        if len(file_items) > 10:
+            return _json_response(self, 400, {"error": "max 10 photos per upload"})
         if not ping(COMFY_HOST, COMFY_PORT):
             return _json_response(self, 503, {"error": "ComfyUI offline"})
-        uploaded = upload_image_bytes(raw, name, host=COMFY_HOST, port=COMFY_PORT)
-        return _json_response(self, 200, {"filename": uploaded, "size": len(raw)})
+
+        filenames: List[str] = []
+        total_size = 0
+        for item in file_items:
+            if not item.file:
+                continue
+            raw = item.file.read()
+            total_size += len(raw)
+            orig = item.filename or "upload.png"
+            ext = os.path.splitext(orig)[1].lower() or ".png"
+            name = f"trainer_{uuid.uuid4().hex[:12]}{ext}"
+            uploaded = upload_image_bytes(raw, name, host=COMFY_HOST, port=COMFY_PORT)
+            filenames.append(uploaded)
+
+        if not filenames:
+            return _json_response(self, 400, {"error": "empty file(s)"})
+
+        payload: Dict[str, Any] = {
+            "filenames": filenames,
+            "count": len(filenames),
+            "size": total_size,
+        }
+        if len(filenames) == 1:
+            payload["filename"] = filenames[0]
+        return _json_response(self, 200, payload)
 
     def _handle_generate(self) -> None:
         body = _read_json(self)
-        image_name = body.get("image_name")
-        if not image_name:
-            return _json_response(self, 400, {"error": "image_name required (upload photo first)"})
+        image_names = body.get("image_names")
+        if not isinstance(image_names, list) or not image_names:
+            legacy = body.get("image_name")
+            image_names = [legacy] if legacy else []
+        image_names = [str(n) for n in image_names if n][:10]
+        if not image_names:
+            return _json_response(self, 400, {"error": "image_names required (upload photos first)"})
         prompt_profile = body.get("prompt_profile", "prompt_1")
         if prompt_profile not in ("prompt_1", "prompt_2"):
             return _json_response(self, 400, {"error": "prompt_profile must be prompt_1 or prompt_2"})
-        count = int(body.get("count", 10))
-        count = max(1, min(10, count))
+        action = body.get("action")
+        if action is not None:
+            set_action(prompt_profile, str(action).strip())
         workflow = body.get("workflow", DEFAULT_WORKFLOW)
         if not ping(COMFY_HOST, COMFY_PORT):
             return _json_response(self, 503, {"error": "ComfyUI offline"})
         result = run_batch(
             workflow=workflow,
-            image_name=image_name,
+            image_names=image_names,
             prompt_profile=prompt_profile,
-            count=count,
+            action=str(action).strip() if action is not None else None,
             host=COMFY_HOST,
             port=COMFY_PORT,
         )
@@ -281,31 +360,22 @@ class TrainerHandler(BaseHTTPRequestHandler):
     def _handle_rate(self) -> None:
         body = _read_json(self)
         gen_id = int(body["generation_id"])
-        rating = Rating(
-            overall=clamp_int(int(body.get("overall", 5)), 1, 10),
-            face=clamp_int(int(body.get("face", 5)), 1, 10),
-            identity=clamp_int(int(body.get("identity", 5)), 1, 10),
-            hands=clamp_int(int(body.get("hands", 5)), 1, 10),
-            fingers=clamp_int(int(body.get("fingers", 5)), 1, 10),
-            body=clamp_int(int(body.get("body", 5)), 1, 10),
-            skin_tone=clamp_int(int(body.get("skin_tone", 5)), 1, 10),
-            motion=clamp_int(int(body.get("motion", 5)), 1, 10),
-            lighting=clamp_int(int(body.get("lighting", 5)), 1, 10),
-            artifacts=clamp_int(int(body.get("artifacts", 5)), 1, 10),
-            comment=str(body.get("comment", "")).strip(),
-        )
+        rating = _rating_from_body(body)
         conn = connect()
         rid = insert_rating(conn, generation_id=gen_id, rating=rating)
         profile = build_profile(conn, DEFAULT_WORKFLOW)
-        apply_result = None
-        if profile:
-            wf_path = default_workflow_path(DEFAULT_WORKFLOW)
-            apply_result = apply_profile_to_workflow(wf_path, profile, explore=False)
+        learn = learn_status(conn, DEFAULT_WORKFLOW)
         pending = count_pending(conn, workflow=DEFAULT_WORKFLOW)
         return _json_response(
             self,
             200,
-            {"rating_id": rid, "profile": profile, "applied": apply_result, "pending": pending},
+            {
+                "rating_id": rid,
+                "profile": profile,
+                "learn": learn,
+                "applied": None,
+                "pending": pending,
+            },
         )
 
     def _handle_apply(self) -> None:

@@ -186,7 +186,7 @@
       "properties": {},
       "widgets_values": [
         "lanczos",
-        640
+        384
       ],
       "color": "#223",
       "bgcolor": "#335"
@@ -1673,7 +1673,7 @@
       "properties": {},
       "widgets_values": [
         "lanczos",
-        640
+        384
       ],
       "color": "#a1309b",
       "bgcolor": "#533"
@@ -1753,7 +1753,7 @@
       ],
       "properties": {},
       "widgets_values": [
-        "(min(a, 640)//16)*16"
+        "(min(a, 384)//16)*16"
       ]
     },
     {
@@ -1789,7 +1789,7 @@
       ],
       "properties": {},
       "widgets_values": [
-        "(min(a, 640)//16)*16"
+        "(min(a, 384)//16)*16"
       ]
     },
     {
@@ -2154,7 +2154,7 @@
       ],
       "properties": {},
       "widgets_values": [
-        49,
+        33,
         1
       ]
     },

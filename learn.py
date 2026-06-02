@@ -6,18 +6,153 @@ import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
 
-TEXT_KEYS = (
-    "skin_tone_prompt_photo_plus_inpaint",
-    "skin_tone_prompt_video",
-    "positive_inpaint_1",
-    "negative_inpaint_1",
-    "positive_inpaint_2_lower_body",
-    "negative_inpaint_2",
-    "video_motion_prompt",
-    "video_negative",
-)
+TEXT_KEYS = ("action",)
 
 NUMERIC_KEYS = ("steps", "cfg", "seed", "frames", "fps")
+
+
+def _node_label(node: Dict[str, Any]) -> str:
+    return (node.get("properties") or {}).get("Node name for S&R", "")
+
+
+def capture_run_json_from_workflow(
+    workflow: Dict[str, Any],
+    *,
+    prompt_profile: str = "prompt_1",
+    source_image: Optional[str] = None,
+    action: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Snapshot action + sampler settings used for a queued run."""
+    from .prompts_store import get_action, get_profile, get_training_settings
+
+    action_text = (action if action is not None else get_action(prompt_profile)).strip()
+    training = get_training_settings()
+    run: Dict[str, Any] = {
+        "nodes": {},
+        "prompt_profile": prompt_profile,
+        "action": action_text,
+        "max_dimension": training["max_dimension"],
+        "frames": training["video_frames"],
+    }
+    if source_image:
+        run["source_image"] = source_image
+
+    profile_nodes = get_profile(prompt_profile, action_override=action_text)
+    for label, text in profile_nodes.items():
+        if label.startswith("shared:"):
+            continue
+        if isinstance(text, str) and text.strip():
+            run["nodes"][label] = {"type": "CLIPTextEncode", "text": text.strip()}
+
+    for node in workflow.get("nodes", []):
+        class_type = node.get("type", "")
+        wv = node.get("widgets_values") or []
+        label = _node_label(node) or f"{class_type}_{node.get('id')}"
+
+        if class_type == "KSampler" and isinstance(wv, list) and len(wv) >= 4:
+            run["nodes"][label] = {
+                "type": class_type,
+                "seed": wv[0],
+                "steps": wv[2],
+                "cfg": wv[3],
+            }
+            run.setdefault("seed", wv[0])
+            run.setdefault("steps", wv[2])
+            run.setdefault("cfg", wv[3])
+
+        elif class_type == "WanImageToVideo" and isinstance(wv, list) and wv:
+            run["nodes"][label] = {"type": class_type, "length": wv[0]}
+            run["frames"] = wv[0]
+
+        elif class_type == "VHS_VideoCombine" and isinstance(wv, dict):
+            fps = wv.get("frame_rate")
+            run["nodes"][label] = {"type": class_type, "frame_rate": fps}
+            if isinstance(fps, (int, float)):
+                run.setdefault("fps", int(fps))
+
+    return run
+
+
+def learn_status(conn: sqlite3.Connection, workflow: str) -> Dict[str, Any]:
+    from .db import rated_runs
+
+    total = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM generations WHERE workflow = ?",
+            (workflow,),
+        ).fetchone()[0]
+    )
+    with_run = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) FROM generations
+            WHERE workflow = ? AND run_json IS NOT NULL AND trim(run_json) NOT IN ('', '{}')
+            """,
+            (workflow,),
+        ).fetchone()[0]
+    )
+    rated = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) FROM ratings r
+            JOIN generations g ON g.id = r.generation_id
+            WHERE g.workflow = ?
+            """,
+            (workflow,),
+        ).fetchone()[0]
+    )
+    usable_rated = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) FROM generations g
+            JOIN ratings r ON r.generation_id = g.id
+            WHERE g.workflow = ? AND g.run_json IS NOT NULL AND trim(g.run_json) NOT IN ('', '{}')
+            """,
+            (workflow,),
+        ).fetchone()[0]
+    )
+
+    rated_rows = rated_runs(conn, workflow)
+    profile = build_profile(conn, workflow) if rated_rows else None
+    settings = (profile or {}).get("settings") or {}
+
+    blockers: List[str] = []
+    if total == 0:
+        blockers.append("No generations in DB — run batch, then Sync & rate.")
+    elif with_run == 0:
+        blockers.append("Generations exist but run_json is empty — learning cannot read prompts/settings.")
+    if rated == 0:
+        blockers.append("No ratings yet — rate at least one output.")
+    elif usable_rated == 0:
+        blockers.append("Ratings exist but rated rows have no run_json — re-sync after updating trainer.")
+
+    stage = "idle"
+    if total > 0 and with_run == 0:
+        stage = "sync_needed"
+    elif rated == 0:
+        stage = "rating"
+    elif profile is None:
+        stage = "blocked"
+    elif settings:
+        stage = "learning"
+    else:
+        stage = "profile_empty"
+
+    return {
+        "workflow": workflow,
+        "stage": stage,
+        "learning_active": bool(profile and settings),
+        "generations_total": total,
+        "generations_with_run_json": with_run,
+        "ratings_count": rated,
+        "rated_with_run_json": usable_rated,
+        "profile_ready": profile is not None,
+        "settings_learned": sorted(settings.keys()),
+        "settings_count": len(settings),
+        "profile": profile,
+        "blockers": blockers,
+        "auto_apply_on_rate": False,
+    }
 
 
 def _parse_run_json(row: sqlite3.Row) -> Dict[str, Any]:

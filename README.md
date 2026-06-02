@@ -1,55 +1,54 @@
 # ComfyUI-trainer
 
-Browser UI for ComfyUI: upload photo → batch generate → rate outputs → auto-learn prompts & settings.
+Browser UI: upload up to **10 photos** → **1 video per photo** → rate body parts → learn.
 
-**Prompts live in `prompts.json` only** — not in Python code.
+**You edit one action line** (e.g. *she waves her hand*). NSFW inpaint/video quality prompts live in `prompts.json` → `system` (hidden, not in UI).
 
 ### RunPod
 
-Clone into `/workspace/runpod-slim/trainer`. Workflow lives in `trainer/workflows/app-photo-video.json`.
-
 ```bash
 cd /workspace/runpod-slim
-git -C trainer pull   # or git clone ...
+git -C trainer pull
 bash trainer/start-trainer.sh
 ```
 
-Search order for workflow file:
-1. `$TRAINER_WORKFLOW_PATH` (if set)
-2. `trainer/workflows/app-photo-video.json`
-3. `ComfyUI/user/default/workflows/app-photo-video.json`
-
 Expose HTTP port **8189** in RunPod.
-
-| Service | URL |
-|---------|-----|
-| ComfyUI | `https://YOUR-POD-8188.proxy.runpod.net/` |
-| Trainer | `https://YOUR-POD-8189.proxy.runpod.net/` |
 
 ### Workflow
 
-1. **Generate tab** — upload training photo
-2. Choose **Prompt 1** or **Prompt 2** (edit text in Prompts tab)
-3. Run **10 generations** (or 5/3/1)
-4. Wait for batch to finish
-5. See **unrated video count** → **Sync & start rating**
-6. Rate hands, fingers, skin, face, motion…
-7. System updates `prompts.json` + sampler settings from best ratings
+1. Upload up to **10 photos**
+2. Enter **one line** — what should happen in the video
+3. **Generate** — one video per photo
+4. **Sync & rate** — face, hands, fingers, body, skin, correct result
+5. **Apply learned profile** when learning status is active
 
-### Prompt profiles
+### prompts.json structure
 
-- `prompt_1` / `prompt_2` in `prompts.json`
-- `app-photo-video.json` in `trainer/workflows/` — models wired, prompts empty (filled from `prompts.json` at run time)
-- CLIPSeg mask text in `shared` section of prompts.json
+```json
+{
+  "system": { "...": "hidden NSFW + quality prompts" },
+  "shared": { "clipseg_upper": "..." },
+  "prompt_1": { "action": "she waves her hand" },
+  "prompt_2": { "action": "" }
+}
+```
+
+### Training speed (lower resolution)
+
+In `prompts.json` → `training`:
+
+```json
+"training": {
+  "max_dimension": 384,
+  "video_frames": 33
+}
+```
+
+Defaults: **384px** max side (was 640), **33 frames** (was 49). Applied automatically on every generate. Increase for final quality runs.
 
 ### CLI
 
 ```bash
 python3 -m trainer.web --port 8189
-python3 -m trainer.suggest --workflow app-photo-video.json
 python3 -m trainer.apply_cli --workflow app-photo-video.json
 ```
-
-### Database
-
-`ratings.sqlite` — generations, ratings, batch runs (created at runtime, gitignored)
