@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -125,16 +126,214 @@ def media_view_url(
     return f"{comfy_base_url(host, port)}/view?{q}"
 
 
+_VIDEO_EXTENSIONS = {".mp4", ".webm", ".gif", ".mov", ".mkv", ".avi"}
+
+
 def resolve_output_path(
     filename: str,
     *,
     subfolder: str = "",
     output_dir: Optional[str] = None,
 ) -> str:
+    found = find_output_file(filename, subfolder=subfolder, output_dir=output_dir)
+    return found or os.path.join(
+        output_dir or default_output_dir(),
+        subfolder,
+        filename,
+    ) if subfolder else os.path.join(output_dir or default_output_dir(), filename)
+
+
+def find_output_file(
+    filename: str,
+    *,
+    subfolder: str = "",
+    output_dir: Optional[str] = None,
+) -> Optional[str]:
     base = output_dir or default_output_dir()
+    candidates: List[str] = []
     if subfolder:
-        return os.path.join(base, subfolder, filename)
-    return os.path.join(base, filename)
+        candidates.append(os.path.join(base, subfolder, filename))
+    candidates.append(os.path.join(base, filename))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    for root, _dirs, files in os.walk(base):
+        if filename in files:
+            return os.path.join(root, filename)
+    return None
+
+
+def _media_type_for_file(filename: str, default: str) -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in _VIDEO_EXTENSIONS:
+        return "video"
+    return default
+
+
+def _collect_outputs(entry: Dict[str, Any]) -> List[Tuple[str, str, str, Optional[str]]]:
+    """Return list of (filename, subfolder, media_type, fullpath)."""
+    found: List[Tuple[str, str, str, Optional[str]]] = []
+    seen: set = set()
+    outputs = entry.get("outputs") or {}
+    for _nid, out in outputs.items():
+        if not isinstance(out, dict):
+            continue
+        for kind, default_type in (
+            ("images", "image"),
+            ("gifs", "video"),
+            ("videos", "video"),
+            ("animated", "video"),
+        ):
+            for item in out.get(kind) or []:
+                if not isinstance(item, dict):
+                    continue
+                filename = item.get("filename")
+                if not filename:
+                    continue
+                key = (filename, item.get("subfolder") or "")
+                if key in seen:
+                    continue
+                seen.add(key)
+                media_type = _media_type_for_file(filename, default_type)
+                fullpath = item.get("fullpath") or item.get("filepath")
+                if isinstance(fullpath, str):
+                    fullpath = fullpath.strip() or None
+                else:
+                    fullpath = None
+                found.append((filename, item.get("subfolder") or "", media_type, fullpath))
+    return found
+
+
+def _scan_recent_videos(
+    output_dir: str,
+    since_ts: int,
+    *,
+    limit: int = 20,
+) -> List[str]:
+    matches: List[Tuple[float, str]] = []
+    for root, _dirs, files in os.walk(output_dir):
+        for name in files:
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in _VIDEO_EXTENSIONS:
+                continue
+            path = os.path.join(root, name)
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if mtime >= since_ts - 120:
+                matches.append((mtime, path))
+    matches.sort(reverse=True)
+    return [path for _mtime, path in matches[:limit]]
+
+
+def sync_history_to_generations(
+    conn,
+    *,
+    workflow: str,
+    host: str = "127.0.0.1",
+    port: int = 8188,
+    output_dir: Optional[str] = None,
+    workflow_path: Optional[str] = None,
+    prompt_ids: Optional[List[str]] = None,
+    since_ts: Optional[int] = None,
+) -> Dict[str, Any]:
+    from .db import insert_generation, lookup_run_json_for_prompt
+    from .util import sha256_file
+
+    try:
+        history = fetch_history(host=host, port=port, max_items=256)
+    except Exception:
+        history = {}
+    created: List[int] = []
+    skipped_missing: List[str] = []
+    out_dir = output_dir or default_output_dir()
+
+    wf: Optional[Dict[str, Any]] = None
+    wf_path = workflow_path or default_workflow_path(workflow)
+    if os.path.isfile(wf_path):
+        with open(wf_path, encoding="utf-8") as f:
+            wf = json.load(f)
+
+    history_items = history.items()
+    if prompt_ids:
+        wanted = set(prompt_ids)
+        history_items = [(pid, entry) for pid, entry in history.items() if pid in wanted]
+
+    synced_paths: set = set()
+
+    for prompt_id, entry in history_items:
+        prompt = entry.get("prompt") or []
+        prompt_dict = prompt[2] if len(prompt) >= 3 and isinstance(prompt[2], dict) else {}
+        run_json = lookup_run_json_for_prompt(conn, prompt_id)
+        if run_json is None and prompt_dict:
+            run_json = extract_run_settings(prompt_dict, workflow=wf)
+
+        outputs = _collect_outputs(entry)
+        if not outputs and since_ts:
+            continue
+
+        for filename, subfolder, media_type, fullpath in outputs:
+            file_path: Optional[str] = None
+            if fullpath and os.path.isfile(fullpath):
+                file_path = fullpath
+            else:
+                file_path = find_output_file(filename, subfolder=subfolder, output_dir=out_dir)
+            if not file_path:
+                skipped_missing.append(filename)
+                continue
+            if file_path in synced_paths:
+                continue
+            synced_paths.add(file_path)
+            file_hash = sha256_file(file_path)
+            gen_id = insert_generation(
+                conn,
+                workflow=workflow,
+                file_path=file_path,
+                file_sha256=file_hash,
+                run_json=run_json,
+                notes="synced from ComfyUI history",
+                prompt_id=f"{prompt_id}:{filename}",
+                media_type=media_type,
+            )
+            created.append(gen_id)
+
+    scan_since = since_ts if since_ts is not None else int(time.time()) - 86400
+    need_scan = len(created) < (len(prompt_ids) if prompt_ids else 1)
+    if scan_since and (need_scan or prompt_ids):
+        for path in _scan_recent_videos(out_dir, scan_since, limit=30):
+            if path in synced_paths:
+                continue
+            name = os.path.basename(path)
+            prompt_id = prompt_ids[0] if prompt_ids and len(prompt_ids) == 1 else "scan"
+            pid_key = f"{prompt_id}:{name}"
+            existing = conn.execute(
+                "SELECT id FROM generations WHERE prompt_id = ? OR file_path = ?",
+                (pid_key, path),
+            ).fetchone()
+            if existing:
+                created.append(int(existing["id"]))
+                synced_paths.add(path)
+                continue
+            run_json = lookup_run_json_for_prompt(conn, prompt_ids[0]) if prompt_ids else None
+            gen_id = insert_generation(
+                conn,
+                workflow=workflow,
+                file_path=path,
+                file_sha256=sha256_file(path),
+                run_json=run_json,
+                notes="synced from output folder scan",
+                prompt_id=pid_key,
+                media_type="video",
+            )
+            created.append(gen_id)
+            synced_paths.add(path)
+
+    return {
+        "generation_ids": created,
+        "synced": len(created),
+        "skipped_missing": skipped_missing,
+    }
 
 
 def _node_label(node: Dict[str, Any]) -> str:
@@ -227,64 +426,3 @@ def extract_run_settings(
             run["action"] = action
 
     return run
-
-
-def _collect_outputs(entry: Dict[str, Any]) -> List[Tuple[str, str, str]]:
-    """Return list of (filename, subfolder, media_type)."""
-    found: List[Tuple[str, str, str]] = []
-    outputs = entry.get("outputs") or {}
-    for _nid, out in outputs.items():
-        for kind, media_type in (("images", "image"), ("gifs", "video"), ("videos", "video")):
-            for item in out.get(kind) or []:
-                filename = item.get("filename")
-                if filename:
-                    found.append((filename, item.get("subfolder") or "", media_type))
-    return found
-
-
-def sync_history_to_generations(
-    conn,
-    *,
-    workflow: str,
-    host: str = "127.0.0.1",
-    port: int = 8188,
-    output_dir: Optional[str] = None,
-    workflow_path: Optional[str] = None,
-) -> List[int]:
-    from .db import insert_generation, lookup_run_json_for_prompt
-    from .util import sha256_file
-
-    history = fetch_history(host=host, port=port)
-    created: List[int] = []
-    out_dir = output_dir or default_output_dir()
-
-    wf: Optional[Dict[str, Any]] = None
-    wf_path = workflow_path or default_workflow_path(workflow)
-    if os.path.isfile(wf_path):
-        with open(wf_path, encoding="utf-8") as f:
-            wf = json.load(f)
-
-    for prompt_id, entry in history.items():
-        prompt = entry.get("prompt") or []
-        prompt_dict = prompt[2] if len(prompt) >= 3 and isinstance(prompt[2], dict) else {}
-        run_json = lookup_run_json_for_prompt(conn, prompt_id)
-        if run_json is None and prompt_dict:
-            run_json = extract_run_settings(prompt_dict, workflow=wf)
-
-        for filename, subfolder, media_type in _collect_outputs(entry):
-            file_path = resolve_output_path(filename, subfolder=subfolder, output_dir=out_dir)
-            if not os.path.exists(file_path):
-                continue
-            file_hash = sha256_file(file_path)
-            gen_id = insert_generation(
-                conn,
-                workflow=workflow,
-                file_path=file_path,
-                file_sha256=file_hash,
-                run_json=run_json,
-                notes=f"synced from ComfyUI history",
-                prompt_id=f"{prompt_id}:{filename}",
-                media_type=media_type,
-            )
-            created.append(gen_id)
-    return created

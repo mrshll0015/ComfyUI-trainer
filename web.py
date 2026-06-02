@@ -209,19 +209,41 @@ class TrainerHandler(BaseHTTPRequestHandler):
                 body = _read_json(self)
                 workflow = body.get("workflow", DEFAULT_WORKFLOW)
                 conn = connect()
+                prompt_ids = None
+                since_ts = None
+                batch_id = body.get("batch_id")
+                if batch_id:
+                    row = conn.execute(
+                        "SELECT prompt_ids, created_at FROM batch_runs WHERE id = ?",
+                        (int(batch_id),),
+                    ).fetchone()
+                    if row:
+                        try:
+                            prompt_ids = json.loads(row["prompt_ids"] or "[]")
+                        except json.JSONDecodeError:
+                            prompt_ids = None
+                        since_ts = int(row["created_at"])
                 ids = sync_history_to_generations(
                     conn,
                     workflow=workflow,
                     host=COMFY_HOST,
                     port=COMFY_PORT,
                     workflow_path=default_workflow_path(workflow),
+                    prompt_ids=prompt_ids,
+                    since_ts=since_ts,
                 )
                 pending = count_pending(conn, workflow=workflow)
                 learn = learn_status(conn, workflow)
                 return _json_response(
                     self,
                     200,
-                    {"synced": len(ids), "generation_ids": ids, "pending": pending, "learn": learn},
+                    {
+                        "synced": ids.get("synced", 0),
+                        "generation_ids": ids.get("generation_ids", []),
+                        "skipped_missing": ids.get("skipped_missing", []),
+                        "pending": pending,
+                        "learn": learn,
+                    },
                 )
             if parsed.path == "/api/rate":
                 return self._handle_rate()

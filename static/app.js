@@ -346,6 +346,18 @@ $("#photoInput").addEventListener("change", async (e) => {
   }
 });
 
+async function retrySync(batchId, attempts = 6, delayMs = 5000) {
+  for (let i = 0; i < attempts; i++) {
+    const body = batchId ? JSON.stringify({ batch_id: batchId }) : "{}";
+    const sync = await api("/api/sync", { method: "POST", body });
+    updatePendingUI(sync.pending);
+    updateLearnUI(sync.learn);
+    if ((sync.pending?.total || 0) > 0) return sync;
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return null;
+}
+
 function pollBatch(batchId, total) {
   if (batchPollTimer) clearInterval(batchPollTimer);
   $("#genProgress").classList.remove("hidden");
@@ -354,13 +366,41 @@ function pollBatch(batchId, total) {
       const s = await api(`/api/generate/status?batch_id=${batchId}`);
       const pct = Math.round((s.completed / total) * 100);
       $("#progressFill").style.width = `${pct}%`;
-      $("#genStatusText").textContent = `Status: ${s.status} · ${s.completed}/${total} done · queue ${s.queue_pending} pending`;
+      let statusLine = `Status: ${s.status} · ${s.completed}/${total} done · queue ${s.queue_pending} pending`;
+      if (s.synced) statusLine += ` · synced ${s.synced}`;
+      $("#genStatusText").textContent = statusLine;
       updatePendingUI({ videos: s.pending_videos, total: s.pending_total });
+
       if (s.status === "done") {
         clearInterval(batchPollTimer);
         batchPollTimer = null;
-        toast(`Batch complete — ${s.pending_videos} videos to rate`);
-        $("#genStatusText").textContent += " · Sync & rate when ready";
+        let sync = {
+          synced: s.synced || 0,
+          pending: { total: s.pending_total, videos: s.pending_videos },
+          skipped_missing: s.skipped_missing || [],
+        };
+        if ((s.pending_total || 0) === 0) {
+          $("#genStatusText").textContent = statusLine + " · syncing outputs…";
+          const retried = await retrySync(batchId);
+          if (retried) sync = retried;
+        }
+        const n = sync.pending?.total || 0;
+        if (n > 0) {
+          toast(`Ready to rate — ${n} item(s)`);
+          showView("rate");
+          currentTab = "pending";
+          document.querySelectorAll("#viewRate .tab").forEach((t) => {
+            t.classList.toggle("active", t.dataset.tab === "pending");
+          });
+          await loadHistory();
+          const next = items.find((i) => i.overall == null);
+          if (next) selectItem(next.id);
+        } else {
+          toast(sync.skipped_missing?.length
+            ? `Done but no files found (${sync.skipped_missing.length} missing) — try Sync & rate`
+            : "Done — video not in output yet, wait and click Sync & start rating");
+          $("#genStatusText").textContent += " · try Sync & rate in 1 min";
+        }
       }
     } catch (err) {
       clearInterval(batchPollTimer);

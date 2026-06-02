@@ -271,10 +271,29 @@ def poll_batch(
         status = "running"
 
     synced = 0
+    sync_result: Dict[str, Any] = {"synced": 0, "skipped_missing": []}
     if auto_sync and status == "done":
-        synced = len(
-            sync_history_to_generations(conn, workflow=workflow, host=host, port=port)
+        sync_result = sync_history_to_generations(
+            conn,
+            workflow=workflow,
+            host=host,
+            port=port,
+            workflow_path=default_workflow_path(workflow),
+            prompt_ids=prompt_ids,
+            since_ts=int(row["created_at"]),
         )
+        synced = int(sync_result.get("synced") or 0)
+    elif auto_sync and done > 0 and status == "running":
+        sync_result = sync_history_to_generations(
+            conn,
+            workflow=workflow,
+            host=host,
+            port=port,
+            workflow_path=default_workflow_path(workflow),
+            prompt_ids=prompt_ids,
+            since_ts=int(row["created_at"]),
+        )
+        synced = int(sync_result.get("synced") or 0)
 
     update_batch_run(conn, batch_id, status=status, completed=done, synced=synced)
 
@@ -290,6 +309,7 @@ def poll_batch(
         "queue_running": running,
         "queue_pending": pending,
         "synced": synced,
+        "skipped_missing": sync_result.get("skipped_missing") or [],
         "pending_videos": pending_stats["videos"],
         "pending_total": pending_stats["total"],
     }
