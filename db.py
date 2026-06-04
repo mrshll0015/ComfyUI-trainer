@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
+
+_DB_LOCK = threading.Lock()
+_SCHEMA_READY = False
 
 
 SCHEMA_SQL = """
@@ -114,12 +119,41 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def connect(db_path: Optional[str] = None) -> sqlite3.Connection:
-    path = db_path or _default_db_path()
-    conn = sqlite3.connect(path)
+def _open(db_path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
+    return conn
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return
     conn.executescript(SCHEMA_SQL)
     _migrate(conn)
+    _SCHEMA_READY = True
+
+
+@contextmanager
+def db_session(db_path: Optional[str] = None) -> Iterator[sqlite3.Connection]:
+    """Thread-safe SQLite access (Trainer uses ThreadingHTTPServer)."""
+    path = db_path or _default_db_path()
+    with _DB_LOCK:
+        conn = _open(path)
+        try:
+            _ensure_schema(conn)
+            yield conn
+        finally:
+            conn.close()
+
+
+def connect(db_path: Optional[str] = None) -> sqlite3.Connection:
+    """Prefer db_session(). If using connect(), always conn.close() when done."""
+    path = db_path or _default_db_path()
+    with _DB_LOCK:
+        conn = _open(path)
+        _ensure_schema(conn)
     return conn
 
 

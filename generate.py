@@ -13,7 +13,7 @@ from .comfy import (
     fetch_history,
     sync_history_to_generations,
 )
-from .db import connect, insert_batch_run, update_batch_run
+from .db import db_session, insert_batch_run, update_batch_run
 from .learn import build_profile, capture_run_json_from_workflow
 from .prompts_store import get_profile, get_training_settings, load_prompts
 from .workflow_api import build_api_prompt, convert_workflow_via_comfy, fetch_object_info
@@ -79,8 +79,8 @@ def get_queue(host: str = "127.0.0.1", port: int = 8188) -> Dict[str, Any]:
 
 
 def _learned_settings(workflow: str) -> Dict[str, Any]:
-    conn = connect()
-    profile = build_profile(conn, workflow)
+    with db_session() as conn:
+        profile = build_profile(conn, workflow)
     return (profile or {}).get("settings") or {}
 
 
@@ -177,14 +177,14 @@ def run_batch(
     object_info = fetch_object_info(host=host, port=port)
     count = len(image_names)
 
-    conn = connect()
-    batch_id = insert_batch_run(
-        conn,
-        workflow=workflow,
-        prompt_profile=prompt_profile,
-        count=count,
-        image_name=json.dumps(image_names),
-    )
+    with db_session() as conn:
+        batch_id = insert_batch_run(
+            conn,
+            workflow=workflow,
+            prompt_profile=prompt_profile,
+            count=count,
+            image_name=json.dumps(image_names),
+        )
 
     prompt_ids: List[str] = []
     prompt_runs: Dict[str, Any] = {}
@@ -217,17 +217,19 @@ def run_batch(
             else:
                 errors.append(f"photo {i + 1}: empty prompt_id")
 
-        update_batch_run(
-            conn,
-            batch_id,
-            status="queued",
-            queued=len(prompt_ids),
-            prompt_ids=prompt_ids,
-            prompt_runs=prompt_runs,
-            error="; ".join(errors) if errors else None,
-        )
+        with db_session() as conn:
+            update_batch_run(
+                conn,
+                batch_id,
+                status="queued",
+                queued=len(prompt_ids),
+                prompt_ids=prompt_ids,
+                prompt_runs=prompt_runs,
+                error="; ".join(errors) if errors else None,
+            )
     except Exception as exc:
-        update_batch_run(conn, batch_id, status="error", error=str(exc))
+        with db_session() as conn:
+            update_batch_run(conn, batch_id, status="error", error=str(exc))
         raise
 
     return {
@@ -249,21 +251,24 @@ def poll_batch(
     port: int = 8188,
     auto_sync: bool = True,
 ) -> Dict[str, Any]:
-    conn = connect()
-    row = conn.execute("SELECT * FROM batch_runs WHERE id = ?", (batch_id,)).fetchone()
-    if not row:
-        raise ValueError(f"batch {batch_id} not found")
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM batch_runs WHERE id = ?", (batch_id,)).fetchone()
+        if not row:
+            raise ValueError(f"batch {batch_id} not found")
+        row_created_at = int(row["created_at"])
+        row_count = int(row["count"])
+        row_status = row["status"]
+        prompt_ids = json.loads(row["prompt_ids"] or "[]")
 
     queue = get_queue(host=host, port=port)
     running = len(queue.get("queue_running") or [])
     pending = len(queue.get("queue_pending") or [])
 
-    prompt_ids = json.loads(row["prompt_ids"] or "[]")
     history = fetch_history(host=host, port=port, max_items=128)
     done = sum(1 for pid in prompt_ids if pid in history)
 
-    status = row["status"]
-    if done >= row["count"]:
+    status = row_status
+    if done >= row_count:
         status = "done"
     elif running or pending:
         status = "running"
@@ -273,38 +278,48 @@ def poll_batch(
     synced = 0
     sync_result: Dict[str, Any] = {"synced": 0, "skipped_missing": []}
     if auto_sync and status == "done":
-        sync_result = sync_history_to_generations(
-            conn,
-            workflow=workflow,
-            host=host,
-            port=port,
-            workflow_path=default_workflow_path(workflow),
-            prompt_ids=prompt_ids,
-            since_ts=int(row["created_at"]),
-        )
-        synced = int(sync_result.get("synced") or 0)
+        with db_session() as conn:
+            sync_result = sync_history_to_generations(
+                conn,
+                workflow=workflow,
+                host=host,
+                port=port,
+                workflow_path=default_workflow_path(workflow),
+                prompt_ids=prompt_ids,
+                since_ts=row_created_at,
+            )
+            synced = int(sync_result.get("synced") or 0)
+            update_batch_run(conn, batch_id, status=status, completed=done, synced=synced)
+            from .db import count_pending
+
+            pending_stats = count_pending(conn, workflow=workflow)
     elif auto_sync and done > 0 and status == "running":
-        sync_result = sync_history_to_generations(
-            conn,
-            workflow=workflow,
-            host=host,
-            port=port,
-            workflow_path=default_workflow_path(workflow),
-            prompt_ids=prompt_ids,
-            since_ts=int(row["created_at"]),
-        )
-        synced = int(sync_result.get("synced") or 0)
+        with db_session() as conn:
+            sync_result = sync_history_to_generations(
+                conn,
+                workflow=workflow,
+                host=host,
+                port=port,
+                workflow_path=default_workflow_path(workflow),
+                prompt_ids=prompt_ids,
+                since_ts=row_created_at,
+            )
+            synced = int(sync_result.get("synced") or 0)
+            update_batch_run(conn, batch_id, status=status, completed=done, synced=synced)
+            from .db import count_pending
 
-    update_batch_run(conn, batch_id, status=status, completed=done, synced=synced)
+            pending_stats = count_pending(conn, workflow=workflow)
+    else:
+        with db_session() as conn:
+            update_batch_run(conn, batch_id, status=status, completed=done, synced=synced)
+            from .db import count_pending
 
-    from .db import count_pending
-
-    pending_stats = count_pending(conn, workflow=workflow)
+            pending_stats = count_pending(conn, workflow=workflow)
 
     return {
         "batch_id": batch_id,
         "status": status,
-        "queued": row["count"],
+        "queued": row_count,
         "completed": done,
         "queue_running": running,
         "queue_pending": pending,

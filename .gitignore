@@ -1,8 +1,18 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+
+# Learned on server — never commit / never overwrite on git pull
+ratings.sqlite
+ratings.sqlite-*
 *.sqlite
 *.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+prompts.json
+workflows/app-photo-video.json
+learned/
+
 *.log
 .env
 .venv/

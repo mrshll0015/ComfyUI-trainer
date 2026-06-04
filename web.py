@@ -21,7 +21,7 @@ from .comfy import (
     ping,
     sync_history_to_generations,
 )
-from .db import Rating, connect, count_pending, insert_rating, list_generations
+from .db import Rating, count_pending, db_session, insert_rating, list_generations
 from .generate import poll_batch, run_batch, upload_image_bytes
 from .learn import build_profile, learn_status
 from .prompts_store import get_profile, load_prompts, set_action
@@ -115,9 +115,9 @@ class TrainerHandler(BaseHTTPRequestHandler):
             if path.startswith("/static/"):
                 return self._serve_static(path[len("/static/") :])
             if path == "/api/health":
-                conn = connect()
-                pending = count_pending(conn, workflow=DEFAULT_WORKFLOW)
-                learn = learn_status(conn, DEFAULT_WORKFLOW)
+                with db_session() as conn:
+                    pending = count_pending(conn, workflow=DEFAULT_WORKFLOW)
+                    learn = learn_status(conn, DEFAULT_WORKFLOW)
                 return _json_response(
                     self,
                     200,
@@ -131,8 +131,8 @@ class TrainerHandler(BaseHTTPRequestHandler):
                     },
                 )
             if path == "/api/stats":
-                conn = connect()
-                pending = count_pending(conn, workflow=qs.get("workflow", [DEFAULT_WORKFLOW])[0])
+                with db_session() as conn:
+                    pending = count_pending(conn, workflow=qs.get("workflow", [DEFAULT_WORKFLOW])[0])
                 return _json_response(self, 200, pending)
             if path == "/api/prompts":
                 data = load_prompts()
@@ -148,28 +148,29 @@ class TrainerHandler(BaseHTTPRequestHandler):
                 workflow = qs.get("workflow", [DEFAULT_WORKFLOW])[0]
                 pending = qs.get("pending", ["0"])[0] == "1"
                 media = qs.get("media", [""])[0]
-                conn = connect()
-                rows = list_generations(
-                    conn,
-                    workflow=workflow,
-                    pending_only=pending,
-                    limit=int(qs.get("limit", ["80"])[0]),
-                )
+                with db_session() as conn:
+                    rows = list_generations(
+                        conn,
+                        workflow=workflow,
+                        pending_only=pending,
+                        limit=int(qs.get("limit", ["80"])[0]),
+                    )
                 items = [_row_to_dict(r) for r in rows]
                 if media == "video":
                     items = [i for i in items if (i.get("media_type") or "") == "video"]
                 return _json_response(self, 200, {"items": items})
             if path == "/api/profile":
                 workflow = qs.get("workflow", [DEFAULT_WORKFLOW])[0]
-                conn = connect()
-                profile = build_profile(conn, workflow)
+                with db_session() as conn:
+                    profile = build_profile(conn, workflow)
                 if not profile:
                     return _json_response(self, 404, {"error": "No ratings yet."})
                 return _json_response(self, 200, profile)
             if path == "/api/learn/status":
                 workflow = qs.get("workflow", [DEFAULT_WORKFLOW])[0]
-                conn = connect()
-                return _json_response(self, 200, learn_status(conn, workflow))
+                with db_session() as conn:
+                    status = learn_status(conn, workflow)
+                return _json_response(self, 200, status)
             if path == "/api/generate/status":
                 batch_id = int(qs.get("batch_id", ["0"])[0])
                 workflow = qs.get("workflow", [DEFAULT_WORKFLOW])[0]
@@ -208,32 +209,32 @@ class TrainerHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/sync":
                 body = _read_json(self)
                 workflow = body.get("workflow", DEFAULT_WORKFLOW)
-                conn = connect()
-                prompt_ids = None
-                since_ts = None
-                batch_id = body.get("batch_id")
-                if batch_id:
-                    row = conn.execute(
-                        "SELECT prompt_ids, created_at FROM batch_runs WHERE id = ?",
-                        (int(batch_id),),
-                    ).fetchone()
-                    if row:
-                        try:
-                            prompt_ids = json.loads(row["prompt_ids"] or "[]")
-                        except json.JSONDecodeError:
-                            prompt_ids = None
-                        since_ts = int(row["created_at"])
-                ids = sync_history_to_generations(
-                    conn,
-                    workflow=workflow,
-                    host=COMFY_HOST,
-                    port=COMFY_PORT,
-                    workflow_path=default_workflow_path(workflow),
-                    prompt_ids=prompt_ids,
-                    since_ts=since_ts,
-                )
-                pending = count_pending(conn, workflow=workflow)
-                learn = learn_status(conn, workflow)
+                with db_session() as conn:
+                    prompt_ids = None
+                    since_ts = None
+                    batch_id = body.get("batch_id")
+                    if batch_id:
+                        row = conn.execute(
+                            "SELECT prompt_ids, created_at FROM batch_runs WHERE id = ?",
+                            (int(batch_id),),
+                        ).fetchone()
+                        if row:
+                            try:
+                                prompt_ids = json.loads(row["prompt_ids"] or "[]")
+                            except json.JSONDecodeError:
+                                prompt_ids = None
+                            since_ts = int(row["created_at"])
+                    ids = sync_history_to_generations(
+                        conn,
+                        workflow=workflow,
+                        host=COMFY_HOST,
+                        port=COMFY_PORT,
+                        workflow_path=default_workflow_path(workflow),
+                        prompt_ids=prompt_ids,
+                        since_ts=since_ts,
+                    )
+                    pending = count_pending(conn, workflow=workflow)
+                    learn = learn_status(conn, workflow)
                 return _json_response(
                     self,
                     200,
@@ -383,11 +384,11 @@ class TrainerHandler(BaseHTTPRequestHandler):
         body = _read_json(self)
         gen_id = int(body["generation_id"])
         rating = _rating_from_body(body)
-        conn = connect()
-        rid = insert_rating(conn, generation_id=gen_id, rating=rating)
-        profile = build_profile(conn, DEFAULT_WORKFLOW)
-        learn = learn_status(conn, DEFAULT_WORKFLOW)
-        pending = count_pending(conn, workflow=DEFAULT_WORKFLOW)
+        with db_session() as conn:
+            rid = insert_rating(conn, generation_id=gen_id, rating=rating)
+            profile = build_profile(conn, DEFAULT_WORKFLOW)
+            learn = learn_status(conn, DEFAULT_WORKFLOW)
+            pending = count_pending(conn, workflow=DEFAULT_WORKFLOW)
         return _json_response(
             self,
             200,
@@ -404,8 +405,8 @@ class TrainerHandler(BaseHTTPRequestHandler):
         body = _read_json(self)
         workflow = body.get("workflow", DEFAULT_WORKFLOW)
         explore = bool(body.get("explore", False))
-        conn = connect()
-        profile = build_profile(conn, workflow)
+        with db_session() as conn:
+            profile = build_profile(conn, workflow)
         if not profile:
             return _json_response(self, 400, {"error": "No learned profile yet."})
         wf_path = body.get("workflow_path") or default_workflow_path(workflow)
